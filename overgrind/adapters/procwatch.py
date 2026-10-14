@@ -114,14 +114,22 @@ def window_title(hwnd: int) -> str:
     return buf.value
 
 
-def modal_dialogs(pid: int) -> list[tuple[int, str]]:
-    """Visible '#32770' dialog windows owned by pid, as (hwnd, title)."""
+def modal_dialogs(pid: int, main_hwnd: int | None = None) -> list[tuple[int, str]]:
+    """Visible dialogs of pid as (hwnd, title): '#32770' windows, or any visible owned window while
+    its owner (the main window) is disabled - which is how Qt/WPF/WinForms modal boxes look."""
     if not _WIN:
         return []
     import ctypes
     u32 = ctypes.windll.user32
-    return [(h, window_title(h)) for h in top_windows(pid)
-            if window_class(h) == "#32770" and u32.IsWindowVisible(h)]
+    u32.GetWindow.restype = ctypes.c_void_p
+    out = []
+    for h in top_windows(pid):
+        if h == main_hwnd or not u32.IsWindowVisible(h):
+            continue
+        owner = u32.GetWindow(h, 4)                      # GW_OWNER
+        if window_class(h) == "#32770" or (owner and not u32.IsWindowEnabled(owner)):
+            out.append((h, window_title(h)))
+    return out
 
 
 def foreground_pid() -> int | None:

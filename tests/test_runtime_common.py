@@ -11,10 +11,12 @@ SIMPLE_GEN = "overgrind.adapters.mock:simple_generator"
 
 def make_project(n_features: int = 4, run: RunConfig | None = None, controls: bool = True,
                  dangerous: bool = False) -> Project:
-    feats = [FeatureDef(id=f"cb_{c}", name=f"Enable {c}", selector=Selector(auto_id=f"cb_{c}"))
-             for c in "abcdefgh"[:n_features]]
+    names = ("alpha", "beta", "gamma", "delta", "eps", "zeta", "eta", "theta")
+    feats = [FeatureDef(id=f"cb_{c[0]}", name=f"Enable {c}",
+                        selector=Selector(auto_id=f"cb_{c}", control_type="CheckBox"))
+             for c in names[:n_features]]
     feats.append(FeatureDef(id="mode", kind="multistate", states=("Off", "Low", "High"),
-                            default_state="Off", selector=Selector(auto_id="cmb_mode")))
+                            default_state="Off", selector=Selector(auto_id="cmb_mode", control_type="ComboBox")))
     feats.append(FeatureDef(id="btn_apply", kind="action", states=(), default_state="",
                             selector=Selector(auto_id="btn_apply")))
     if dangerous:

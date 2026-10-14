@@ -11,10 +11,10 @@ def multistate(fid, states=("off", "low", "high")):
     return FeatureDef(fid, kind="multistate", states=tuple(states))
 
 
-def control(cid, kind="integer", scope=(), **dom):
+def control(cid, kind="integer", scope=(), skip=False, **dom):
     if kind == "integer":
         dom = {"minimum": 0, "maximum": 100, **dom}
-    return ControlDef(cid, kind, Selector(auto_id=cid), Domain(kind, **dom), scope=tuple(scope))
+    return ControlDef(cid, kind, Selector(auto_id=cid), Domain(kind, **dom), scope=tuple(scope), skip=skip)
 
 
 def project(features, controls=(), constraints=(), **run):

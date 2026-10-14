@@ -34,7 +34,7 @@ class Protocol(unittest.TestCase):
                 for c in cases:
                     self.assertNotIn("sk", c.values)                      # skipped control
                     self.assertEqual(set(c.values), {"i", "c", "b", "x", "t"})
-                    self.assertEqual(set(c.state), {"f0", "f1", "f2", "f3", "f4"[:0] or "m"} | {"f0", "f3"} | {"f1", "f2"})
+                    self.assertEqual(set(c.state), {"f0", "f1", "f2", "f3", "m"})
                     self.assertFalse(c.state["f1"] == "on" and c.state["f2"] == "on")
                 cov = g.coverage()
                 self.assertTrue(cov.guarantee)
