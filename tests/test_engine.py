@@ -41,9 +41,9 @@ class PlannerTests(unittest.TestCase):
             {(a, b) for a in ("filter", "delay", "reverb")
              for b in ("filter", "delay", "reverb")}
         )
-        self.assertEqual({(c.first, c.second): sum(
+        self.assertEqual(set({(c.first, c.second): sum(
             1 for item in cases if (item.first, item.second) == (c.first, c.second)
-        ) for c in cases}.values(), {2})
+        ) for c in cases}.values()), {2})
 
     def test_same_seed_is_replayable_and_pair_order_is_randomized(self):
         first = list(generate_cases(application(), samples=4, seed=91))
@@ -98,6 +98,26 @@ class ValidationTests(unittest.TestCase):
             ControlSpec.from_dict({"id": "gain", "kind": "boolean"})
 
 
+class FeatureModeTests(unittest.TestCase):
+    def test_enable_mode_is_supported_for_checkbox_features(self):
+        spec = AppSpec.from_dict({
+            "title_regex": "Test",
+            "features": [{"id": "x", "mode": "enable",
+                          "selector": {"auto_id": "toggle"}}],
+            "controls": []
+        })
+        self.assertEqual(spec.features[0].mode, "enable")
+
+    def test_unknown_feature_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            AppSpec.from_dict({
+                "title_regex": "Test",
+                "features": [{"id": "x", "mode": "unknown",
+                              "selector": {"auto_id": "toggle"}}],
+                "controls": []
+            })
+
+
 class SamplingTests(unittest.TestCase):
     def test_bounded_integer_single_point(self):
         control = ControlSpec.from_dict({"id": "x", "kind": "integer",
@@ -119,6 +139,10 @@ class FakeAdapter:
         self.sets = []
         self.actions = []
         self.fail_on = fail_on
+        self.preparations = 0
+
+    def prepare_case(self, features):
+        self.preparations += 1
 
     def set_control(self, control, value):
         self.sets.append((control.id, value))
@@ -145,6 +169,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(adapter.actions, [action for row in rows
                          for action in row["pair"]])
         self.assertEqual(len(adapter.sets), 18 * 5)
+        self.assertEqual(adapter.preparations, 18)
         self.assertTrue(all(row["status"] == "passed" and row["seed"] == 17
                             for row in rows))
 
