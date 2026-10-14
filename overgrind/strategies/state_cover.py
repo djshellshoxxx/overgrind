@@ -8,11 +8,15 @@ falls back to uniform valid sampling and reports ``states_total=None``.
 """
 from __future__ import annotations
 
+from array import array
+
 from ..states import derive_seed, pow2_text
 from ..types import Coverage
 from . import BaseGenerator
 
 DEFAULT_BUDGET = 1_000_000
+COUNT_CAP = 4096          # per-state visit vector is kept (and reported) up to this many states
+HIST_BINS = 9             # histogram bins 0..7 and '8 or more'
 
 
 class Generator(BaseGenerator):
@@ -29,6 +33,7 @@ class Generator(BaseGenerator):
         self._perm = None
         self._perm_epoch = -1
         self.sampled = 0
+        self._counts = array("B", bytes(n)) if self.epoch_mode and n <= COUNT_CAP else None
 
     # ------------------------------------------------------------ stream
     def _next_case(self):
@@ -38,7 +43,10 @@ class Generator(BaseGenerator):
                 self._perm = sp.permutation(derive_seed(self.seed, self.epoch, 0x57A7E))
                 self._perm_epoch = self.epoch
             ep, ix = self.epoch, self.index
-            idx = sp.unrank(self._perm(ix))
+            rank = self._perm(ix)
+            idx = sp.unrank(rank)
+            if self._counts is not None and self._counts[rank] < 255:
+                self._counts[rank] += 1
             rng = self.rng(ep, ix) if self.plan.n else None
             values = self.plan.sample_all(rng) if rng is not None else {}
             tags = (f"epoch:{ep + 1}",)
@@ -64,13 +72,23 @@ class Generator(BaseGenerator):
             else:
                 g = (f"All {n} valid feature states visited {ep} time{'s' if ep != 1 else ''}"
                      f" (epoch {ep + 1}: {ix}/{n}); control values sampled, not exhaustive.")
-            return Coverage(states_total=n, states_visited=visited, epochs=ep, guarantee=g)
+            return Coverage(states_total=n, states_visited=visited, epochs=ep, guarantee=g,
+                            state_counts=tuple(self._counts) if self._counts is not None else (),
+                            visit_hist=self._hist(n, ep, ix))
         size = self.space.size
         txt = (f"about {pow2_text(size)} valid feature states" if size is not None
                else "an uncountable number of valid feature states")
         g = (f"Space too large to enumerate within budget {self.budget} ({txt}): {self.sampled} cases drawn "
-             "uniformly from valid states; no coverage guarantee, control values sampled.")
+             "uniformly from valid states; NOT a complete-coverage claim, control values sampled.")
         return Coverage(states_total=None, states_visited=0, epochs=0, guarantee=g)
+
+    @staticmethod
+    def _hist(n: int, ep: int, ix: int) -> tuple[int, ...]:
+        """Visit-count histogram, exact and O(1): ``ix`` states were visited ep+1 times, the rest ep times."""
+        h = [0] * HIST_BINS
+        h[min(ep + 1, HIST_BINS - 1)] += ix
+        h[min(ep, HIST_BINS - 1)] += n - ix
+        return tuple(h)
 
     # ------------------------------------------------------------ checkpoint
     def _ck_extra(self):
@@ -81,3 +99,12 @@ class Generator(BaseGenerator):
         self.index = int(st.get("index", 0))
         self.sampled = int(st.get("sampled", 0))
         self._perm = None
+        if self._counts is not None:           # derived state: every rank ep times, +1 for this epoch's prefix
+            ep, ix = self.epoch, self.index
+            self._counts = array("B", bytes([min(ep, 255)]) * self.n)
+            if ix:
+                perm = self.space.permutation(derive_seed(self.seed, ep, 0x57A7E))
+                for j in range(ix):
+                    r = perm(j)
+                    if self._counts[r] < 255:
+                        self._counts[r] += 1

@@ -36,6 +36,15 @@ MAX_NO_PROGRESS_RESTARTS = 5
 CHECKPOINT_NAME = "checkpoint.json"
 
 
+def scrub_keys(obj: Any, names: frozenset[str]) -> Any:
+    """Copy of a JSON-able structure with every dict entry keyed by one of ``names`` removed."""
+    if isinstance(obj, dict):
+        return {k: scrub_keys(v, names) for k, v in obj.items() if k not in names}
+    if isinstance(obj, (list, tuple)):
+        return [scrub_keys(v, names) for v in obj]
+    return obj
+
+
 def _project_hash(project: Project) -> str:
     try:
         from . import project as proj_mod
@@ -57,7 +66,9 @@ class RunController:
         self.poll_s = poll_s
         self._alive = liveness or procwatch.is_alive
         self.run_id = uuid.uuid4().hex[:12]
-        self.store = evidence.EvidenceStore(self.evidence_dir)
+        # sensitive controls are redacted in every persisted copy (case, history, message, index, reduced)
+        self.store = evidence.EvidenceStore(self.evidence_dir,
+                                            sensitive=[c.id for c in project.controls if c.sensitive])
         self._lock = threading.RLock()
         self._cbs: list[Callable[[ErrorEvent], None]] = []
         self._thread: threading.Thread | None = None
@@ -85,6 +96,7 @@ class RunController:
         self._inc_counted = 0
         self._shot_dir = os.path.join(tempfile.gettempdir(), f"overgrind-shots-{self.run_id}")
         self._phash = _project_hash(project)
+        self._sensitive = frozenset(c.id for c in project.controls if c.sensitive)
         if resume:
             self._load_checkpoint()
         try:
@@ -177,7 +189,10 @@ class RunController:
         if self._ckpt is None or self.checkpoint_interval_s is None:
             return
         data = {"version": 1, "run_id": self.run_id, "project_hash": self._phash,
-                "saved": datetime.now(timezone.utc).isoformat(), "generator": self._ckpt,
+                "saved": datetime.now(timezone.utc).isoformat(),
+                # generators such as chaos/adaptive keep raw control values in their state: sensitive ones
+                # must never reach disk (on resume they are simply re-drawn)
+                "generator": scrub_keys(self._ckpt, self._sensitive) if self._sensitive else self._ckpt,
                 "cases": self._cases, "errors_unique": len(self._run_unique)}
         try:
             evidence.atomic_write_text(self.checkpoint_path, json.dumps(data, separators=(",", ":")))

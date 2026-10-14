@@ -66,7 +66,6 @@ class SensitiveNeverReachesDisk(unittest.TestCase):
                 break
         self.assertIsNotNone(secret)
         d = tempfile.mkdtemp(prefix="og-sens-")
-        # message contains the value too (an app that echoes its input in the crash text)
         c = RunController(p, mock_spec(crash_rate=1.0), d, stop=StopConditions(max_cases=5),
                           generator_factory=SIMPLE_GEN, checkpoint_interval_s=0.1)
         c.start()
@@ -144,10 +143,10 @@ class CoverageCounts(unittest.TestCase):
         self.assertEqual(cv.states_visited, 5)
         self.assertEqual(cv.visit_hist[:2], (3, 5))
         self.assertEqual(sum(cv.visit_hist), 8)
-        take(g, 8 + 3)                                  # one full epoch + 3 more of the second
+        take(g, 6)                                      # 11 = one full epoch + 3 of the second
         cv = g.coverage()
         self.assertEqual(sorted(set(cv.state_counts)), [1, 2])
-        self.assertEqual(sum(cv.state_counts), 16)
+        self.assertEqual(sum(cv.state_counts), 11)
         self.assertEqual(cv.visit_hist[1:3], (5, 3))
 
     def test_counts_survive_checkpoint_and_match_rank_to_state(self):
@@ -238,3 +237,46 @@ class CliRobustness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CliWarningsDoNotBlock(unittest.TestCase):
+    def test_warning_only_project_runs_and_warns_on_stderr(self):
+        """validate() warnings (dangerous feature, empty target, ...) used to abort every CLI command."""
+        d = Path(tempfile.mkdtemp(prefix="og-cliw-"))
+        f = (FeatureDef("cb_a", selector=Selector(auto_id="a")),
+             FeatureDef("btn_delete", name="Delete all", kind="action", states=(), default_state="",
+                        selector=Selector(auto_id="d")))
+        p = Project("w", TargetRef(), f, ())
+        P.save(p, d / "p.json")
+        self.assertTrue(any(m.startswith("warning:") for m in P.validate(p)))
+        r = subprocess.run([sys.executable, "-m", "overgrind", "v2", "estimate", "--project", str(d / "p.json")],
+                           capture_output=True, cwd=d, env=dict(os.environ, PYTHONPATH=str(ROOT)), timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(b"warning:", r.stderr)
+        self.assertIn("valid_states", json.loads(r.stdout))
+
+
+class CheckpointDoesNotPersistSensitiveValues(unittest.TestCase):
+    def test_chaos_and_adaptive_checkpoints_drop_sensitive_values(self):
+        for strategy in ("chaos", "adaptive"):
+            dom = Domain("text", max_length=12, alphabet="XQ")
+            feats = (FeatureDef("cb_a", selector=Selector(auto_id="a")), FeatureDef("cb_b", selector=Selector(auto_id="b")))
+            ctl = (ControlDef("field7", "text", Selector(auto_id="f7"), dom, default="XQXQXQXQ", sensitive=True),
+                   ControlDef("vol", "integer", Selector(auto_id="v"), Domain("integer", 0, 9), default=1))
+            p = Project("t", TargetRef(), feats, ctl,
+                        run=RunConfig(strategy=strategy, seed=3, capture_screenshot=False, settle_ms=0))
+            d = tempfile.mkdtemp(prefix="og-ck-")
+            c = RunController(p, mock_spec(), d, stop=StopConditions(max_cases=60), checkpoint_interval_s=0.05)
+            c.start()
+            self.assertTrue(c.join(60))
+            ck = (Path(d) / "checkpoint.json").read_text()
+            self.assertIn('"generator"', ck)
+            self.assertNotIn("field7", ck, strategy)
+            self.assertNotIn("XQXQXQXQ", ck, strategy)
+            # and the run can resume from it (sensitive controls simply get fresh values)
+            c2 = RunController(p, mock_spec(), d, stop=StopConditions(max_cases=50), resume=True,
+                               checkpoint_interval_s=None)
+            c2.start()
+            self.assertTrue(c2.join(60))
+            self.assertEqual(c2.stats().stop_reason, "max_cases")
+            self.assertEqual(c2.stats().harness_errors, 0)

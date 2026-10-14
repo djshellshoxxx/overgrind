@@ -16,6 +16,7 @@ import multiprocessing
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import danger as _danger
 from .adapters import resolve as R
 from .types import (
     AdapterSpec, ControlDef, ElementInfo, FeatureDef, HarnessError, Project, Selector,
@@ -171,14 +172,29 @@ def run_preflight(project: Project, adapter_spec: AdapterSpec) -> PreflightRepor
     try:
         for f in project.features:
             if f.enabled:
-                rep.items.append(_check_feature(adapter, f, elements))
+                rep.items.append(_guarded("feature", f.id, _check_feature, adapter, f, elements))
         for c in project.controls:
             if not c.skip:
-                rep.items.append(_check_control(adapter, c, elements))
-        rep.items.append(_check_reset(adapter, project))
+                rep.items.append(_guarded("control", c.id, _check_control, adapter, c, elements))
+        rep.items.append(_guarded("reset", "reset()", _check_reset, adapter, project))
     finally:
+        try:                                    # probes wrote values: always leave the target at its baseline
+            adapter.reset(project)
+        except Exception:                       # noqa: BLE001
+            pass
         _close(adapter)
     return rep
+
+
+def _guarded(kind: str, ident: str, fn: Any, *args: Any) -> PreflightItem:
+    """One misbehaving adapter call must fail ITS item, not abort the whole preflight."""
+    try:
+        return fn(*args)
+    except Exception as exc:    # noqa: BLE001
+        it = PreflightItem(kind, ident)
+        it.add("probe", "fail", f"unexpected {type(exc).__name__}: {exc}")
+        it.hints.append("the adapter raised something other than HarnessError; check the target is still running")
+        return it
 
 
 def _close(adapter: Any) -> None:
@@ -213,6 +229,14 @@ def _check_feature(adapter: Any, f: FeatureDef, elements: list[ElementInfo]) -> 
     sels = [("selector", f.selector)] if f.kind != "multistate" or not f.state_selectors else []
     sels += [(f"selector[{k}]", s) for k, s in f.state_selectors.items()]
     ok = all([_locate(it, s, elements, label) for label, s in sels]) if sels else True
+    if not f.dangerous:
+        hit = _danger.scan_feature(f)
+        if hit is not None:
+            # spec P12: 'block' items fail until excluded or flagged; other tiers are a warning
+            it.add("danger", "fail" if hit.tier == "block" else "warn",
+                   f"{f.id!r} looks dangerous ({hit.reason()}); it would be exercised thousands of times")
+            it.hints.append(f'mark "{f.id}" dangerous (it is then never clicked) or disable it; run on a '
+                            f'disposable VM/profile with test data (keyword check is a heuristic)')
     if f.dangerous:
         it.add("safety", "info", "flagged dangerous: never clicked, not tested here")
         return it

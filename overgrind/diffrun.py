@@ -128,8 +128,12 @@ def _build(spec: AdapterSpec, project: Project) -> Any:
     return a
 
 
-def _active(state: dict[str, str], fid: str) -> bool:
-    return str(state.get(fid, "off")).lower() != "off"
+def _active(state: dict[str, str], fid: str, feats: dict[str, FeatureDef] | None = None) -> bool:
+    """Scope semantics (types.ControlDef.scope): active == state is not the feature's first state."""
+    f = feats.get(fid) if feats else None
+    if f is not None and f.states:
+        return state.get(fid, f.default_state) != f.states[0]
+    return str(state.get(fid, "off")).lower() not in ("off", "false", "0", "none", "")
 
 
 def _run_build(project: Project, spec: AdapterSpec, cases: list[Case], id_map: dict[str, str | None],
@@ -164,7 +168,7 @@ def _run_build(project: Project, spec: AdapterSpec, cases: list[Case], id_map: d
                         unresolved.add(fid)
                 for cid, val in case.values.items():
                     c = ctls.get(cid)
-                    if c is None or any(not _active(case.state, s) for s in c.scope):
+                    if c is None or any(not _active(case.state, s, feats) for s in c.scope):
                         continue
                     mapped = id_map.get(cid, cid)
                     if mapped is None:
@@ -179,7 +183,7 @@ def _run_build(project: Project, spec: AdapterSpec, cases: list[Case], id_map: d
                 if outcome.ok:
                     for cid in case.values:
                         c = ctls.get(cid)
-                        if c is None or cid in unresolved or any(not _active(case.state, s) for s in c.scope):
+                        if c is None or cid in unresolved or any(not _active(case.state, s, feats) for s in c.scope):
                             continue
                         try:
                             readback[cid] = adapter.get_control(replace(c, id=id_map.get(cid, cid)))

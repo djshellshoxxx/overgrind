@@ -1,13 +1,14 @@
 """Step 1: choose what to test."""
 from __future__ import annotations
 
+import ntpath
 import os
 import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QPushButton, QRadioButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QRadioButton, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..types import TargetRef
@@ -70,8 +71,10 @@ class TargetPage(PageBase):
         self.card = QGroupBox("Selected target")
         cf = QFormLayout(self.card)
         self.v_path = QLabel("-"); self.v_arch = QLabel("-"); self.v_pid = QLabel("-"); self.v_title = QLabel("-")
-        for lab in (self.v_path, self.v_title):
-            lab.setWordWrap(True); lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        for lab in (self.v_path, self.v_title, self.v_arch, self.v_pid):
+            lab.setWordWrap(True); lab.setTextFormat(Qt.TextFormat.PlainText)
+            lab.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         cf.addRow("Path:", self.v_path); cf.addRow("Type:", self.v_arch); cf.addRow("Process ID:", self.v_pid); cf.addRow("Window title:", self.v_title)
         self.body.addWidget(self.card)
         self.body.addStretch(1)
@@ -98,7 +101,13 @@ class TargetPage(PageBase):
 
     def reload(self) -> None:
         self.btn_refresh.setEnabled(False); self.list_note.setText("Looking for open windows...")
-        run_async(backend.list_windows, self._got, lambda m: self._got([]))
+        run_async(backend.list_windows, self._got, self._list_failed)
+
+    def _list_failed(self, msg: str) -> None:
+        self._windows = []
+        self.btn_refresh.setEnabled(True)
+        self._fill()
+        self.list_note.setText(f"We could not list the open windows. {msg} You can still choose \"Start a program for me\" and browse for the EXE.")
 
     def _got(self, wins) -> None:
         self._windows = list(wins)
@@ -121,7 +130,7 @@ class TargetPage(PageBase):
             if keep and w["pid"] == keep:
                 self.table.selectRow(r)
         self.table.blockSignals(False)
-        if not rows:
+        if not rows and self._windows is not None and self.list_note.text().startswith(("Looking", "Only visible", "Showing")):
             self.list_note.setText("No matching windows. Start your program, then press Refresh list.")
 
     def _picked(self) -> None:
@@ -143,15 +152,17 @@ class TargetPage(PageBase):
     def _exe_changed(self) -> None:
         if self.r_running.isChecked():
             return
-        path = self.exe_path.text().strip()
+        path = self.exe_path.text().strip().strip('"').strip()      # a path pasted from Explorer often comes quoted
         if not path:
             return
+        if path != self.exe_path.text():
+            self.exe_path.setText(path)
         import shlex
         try:
             args = tuple(shlex.split(self.exe_args.text(), posix=False))
         except ValueError:
             args = tuple(self.exe_args.text().split())
-        self.model.set_target(TargetRef(kind="exe", exe_path=path, args=args, process_name=os.path.basename(path)))
+        self.model.set_target(TargetRef(kind="exe", exe_path=path, args=args, process_name=ntpath.basename(path)))
 
     def refresh(self) -> None:
         t = self.model.project.target
@@ -169,4 +180,4 @@ class TargetPage(PageBase):
             arch = next((w["arch"] for w in self._windows if w["pid"] == t.pid), "-") if t.pid else "-"
         self.v_arch.setText(arch)
         self.v_pid.setText(str(t.pid) if t.pid else ("Will be set when started" if t.kind == "exe" and t.exe_path else "-"))
-        self.v_title.setText(t.title_regex.replace("\\", "") if t.title_regex else "-")
+        self.v_title.setText(re.sub(r"\\(.)", r"\1", t.title_regex) if t.title_regex else "-")

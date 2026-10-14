@@ -380,7 +380,7 @@ class Generator(BaseGenerator):
         if not self.exact:
             g = (f"SAMPLED mode: {t}-way tuple universe {self.universe} needs {self.W} tracked codes "
                  f"(> tuple_cap {self.tuple_cap}); nothing tracked, cases are random valid states with random "
-                 f"buckets. No {t}-way coverage is claimed{note}.")
+                 f"buckets. NOT a complete-coverage claim: no {t}-way coverage is claimed{note}.")
             return Coverage(tway_t=t, tway_total=self.universe, tway_covered=0, buckets_total=nb, guarantee=g)
         extra = ""
         if not self.scan_complete:
@@ -397,7 +397,8 @@ class Generator(BaseGenerator):
                  f"control values drawn fresh inside buckets, not exhaustive.{extra}{note}")
         return Coverage(states_total=None, tway_t=t, tway_total=pr["total"], tway_covered=pr["covered"],
                         epochs=self.sweeps_done, buckets_total=nb,
-                        buckets_visited=nb if self.sweeps_done >= 1 else 0, guarantee=g)
+                        buckets_visited=nb if self.sweeps_done >= 1 else 0, guarantee=g,
+                        infeasible=self.infeasible, unknown=self.unresolved)
 
     # ------------------------------------------------------------ checkpoint
     def _ck_extra(self):

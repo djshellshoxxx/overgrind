@@ -201,9 +201,16 @@ class Worker:
         self.op("wait", "quiesce", None, a.wait_quiescent, max(50, run.op_timeout_ms // 2))
 
     def scope_ok(self, c: Any, case: Case) -> bool:
+        """types.ControlDef.scope: every scope feature must be *active*, i.e. in a state other than its
+        first (off) state. Same rule as constraints/states/strategies; unknown features fall back to the
+        off-word heuristic."""
         for sid in c.scope:
             f = self.feats.get(sid)
-            if not is_active(case.state.get(sid, f.default_state if f else None)):
+            st = case.state.get(sid, f.default_state if f else None)
+            if f is not None and f.states:
+                if st == f.states[0]:
+                    return False
+            elif not is_active(st):
                 return False
         return True
 

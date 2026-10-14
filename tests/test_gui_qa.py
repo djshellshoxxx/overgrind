@@ -59,11 +59,12 @@ class ModelDirtyUndo(GuiCase):
 
     def test_typing_edits_merge_into_one_undo_step(self):
         m = ProjectModel()
-        for v in (1, 12, 123):
+        before = m.project.run.seed
+        for v in (5, 52, 523):
             m.edit("Change seed", lambda p, v=v: dc.replace(p, run=dc.replace(p.run, seed=v)), merge="seed")
-        self.assertEqual(m.project.run.seed, 123)
+        self.assertEqual(m.project.run.seed, 523)
         m.undo()
-        self.assertEqual(m.project.run.seed, 0)
+        self.assertEqual(m.project.run.seed, before)
         self.assertFalse(m.can_undo())
 
     def test_different_merge_keys_do_not_merge(self):

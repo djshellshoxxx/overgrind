@@ -8,10 +8,12 @@ import math
 import os
 import re
 import tempfile
+import time
 import types as _pytypes
 from pathlib import Path
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
+from . import danger as _danger
 from . import domain as _dom
 from .types import (SCHEMA_VERSION, ConstraintDef, ControlDef, Domain, FeatureDef,
                     Project, Provenance, RunConfig, Selector, TargetRef)
@@ -161,7 +163,7 @@ def migrate_v1(d: dict[str, Any]) -> Project:
 
 def load(path: str | os.PathLike) -> Project:
     """Read a project file; v1 manifests are migrated automatically (name = file stem)."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))   # Notepad writes a BOM
     if not isinstance(data, dict):
         raise ValueError("project file must contain a JSON object")
     version = data.get("schema_version")
@@ -172,6 +174,20 @@ def load(path: str | os.PathLike) -> Project:
         return dataclasses.replace(p, name=data["name"]) if data.get("name") else \
             dataclasses.replace(p, name=Path(path).stem)
     raise ValueError(f"unsupported schema_version {version!r}")
+
+
+def replace_with_retry(src: str | os.PathLike, dst: str | os.PathLike, attempts: int = 8) -> None:
+    """os.replace that rides out Windows sharing violations (antivirus / a reader holding the file)."""
+    delay = 0.01
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
 
 
 def save(p: Project, path: str | os.PathLike) -> None:
@@ -185,7 +201,7 @@ def save(p: Project, path: str | os.PathLike) -> None:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, target)
+        replace_with_retry(tmp, target)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -236,16 +252,99 @@ def _domain_problems(label: str, d: Domain) -> list[str]:
     return out
 
 
+def _is_int(x: Any) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def _is_num(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+_RESET_POLICIES = ("every_case", "interval", "never")
+# strategy_options key -> (checker, human description)
+_OPTION_RULES: dict[str, tuple[Any, str]] = {
+    "t": (lambda v: _is_int(v) and 1 <= v <= 4, "an integer 1..4"),
+    "buckets": (lambda v: _is_int(v) and 1 <= v <= 1000, "an integer 1..1000"),
+    "tuple_cap": (lambda v: _is_int(v) and 1 <= v <= 2 ** 40, "a positive integer"),
+    "scan_cap": (lambda v: _is_int(v) and v >= 1, "a positive integer"),
+    "gain_cap": (lambda v: _is_int(v) and 1 <= v <= 10 ** 6, "a positive integer"),
+    "budget": (lambda v: _is_int(v) and v >= 1, "a positive integer"),
+    "candidates": (lambda v: _is_int(v) and 1 <= v <= 1000, "an integer 1..1000"),
+    "explore": (lambda v: _is_num(v) and 0 <= v <= 1, "a number 0..1"),
+    "failure_focus": (lambda v: _is_num(v) and 0 <= v <= 1, "a number 0..1"),
+    "invalid_rate": (lambda v: _is_num(v) and 0 <= v <= 1, "a number 0..1"),
+    "reset_rate": (lambda v: _is_num(v) and 0 <= v <= 1, "a number 0..1"),
+}
+
+
+def _run_problems(r: RunConfig) -> tuple[list[str], list[str]]:
+    from .strategies import STRATEGY_NAMES
+    errs: list[str] = []
+    warns: list[str] = []
+    if r.strategy not in STRATEGY_NAMES:
+        errs.append(f"run.strategy {r.strategy!r} is unknown (choose one of {', '.join(STRATEGY_NAMES)})")
+    if r.reset_policy not in _RESET_POLICIES:
+        errs.append(f"run.reset_policy {r.reset_policy!r} must be one of {', '.join(_RESET_POLICIES)}")
+    for name, lo, hi in (("seed", None, None), ("reset_interval", 1, None), ("settle_ms", 0, 3_600_000),
+                         ("op_timeout_ms", 1, None), ("case_timeout_ms", 1, None),
+                         ("hang_threshold_ms", 1, None), ("ring_size", 1, 1_000_000),
+                         ("confirm_runs", 2, 1000)):
+        v = getattr(r, name)
+        if not _is_int(v):
+            errs.append(f"run.{name} must be an integer (got {v!r})")
+        elif (lo is not None and v < lo) or (hi is not None and v > hi):
+            rng = f">= {lo}" if hi is None else f"between {lo} and {hi}"
+            errs.append(f"run.{name} must be {rng} (got {v})")
+    if not isinstance(r.strategy_options, dict):
+        errs.append("run.strategy_options must be an object")
+    else:
+        for k, v in r.strategy_options.items():
+            rule = _OPTION_RULES.get(k)
+            if rule is None:
+                warns.append(f"warning: run.strategy_options has an unknown key {k!r} (ignored)")
+            elif not rule[0](v):
+                errs.append(f"run.strategy_options[{k!r}] must be {rule[1]} (got {v!r})")
+    ok = all(_is_int(getattr(r, n)) for n in ("hang_threshold_ms", "case_timeout_ms", "op_timeout_ms"))
+    if ok and r.hang_threshold_ms > r.case_timeout_ms:
+        warns.append(f"warning: run.hang_threshold_ms ({r.hang_threshold_ms}) exceeds case_timeout_ms "
+                     f"({r.case_timeout_ms}); the watchdog will kill a slow case before it can be called a hang")
+    if ok and r.op_timeout_ms > r.case_timeout_ms:
+        warns.append(f"warning: run.op_timeout_ms ({r.op_timeout_ms}) exceeds case_timeout_ms ({r.case_timeout_ms})")
+    return errs, warns
+
+
+def _target_problems(t: TargetRef) -> tuple[list[str], list[str]]:
+    errs: list[str] = []
+    warns: list[str] = []
+    if t.title_regex:
+        try:
+            re.compile(t.title_regex)
+        except re.error as exc:
+            errs.append(f"target.title_regex is not a valid regular expression: {exc}")
+    if t.pid is not None and (not _is_int(t.pid) or t.pid <= 0):
+        errs.append(f"target.pid must be a positive integer (got {t.pid!r})")
+    if not (t.exe_path or t.title_regex or t.process_name or t.pid):
+        warns.append("warning: target is empty (no exe_path, title_regex, process_name or pid); "
+                     "nothing can be attached")
+    return errs, warns
+
+
 def validate(p: Project) -> list[str]:
     """Human-readable problems; entries starting with 'warning:' are non-blocking."""
     errs: list[str] = []
     warns: list[str] = []
     if p.schema_version != SCHEMA_VERSION:
         errs.append(f"unsupported schema_version {p.schema_version}")
+    e, w = _run_problems(p.run)
+    errs += e
+    warns += w
+    e, w = _target_problems(p.target)
+    errs += e
+    warns += w
 
     fids: dict[str, FeatureDef] = {}
     for f in p.features:
-        if not f.id:
+        if not f.id or not f.id.strip():
             errs.append("feature with empty id")
         if f.id in fids:
             errs.append(f"duplicate feature id {f.id!r}")
@@ -265,14 +364,23 @@ def validate(p: Project) -> list[str]:
         if f.dangerous and f.enabled:
             warns.append(f"warning: feature {f.id!r} is marked dangerous and is enabled; "
                          f"it will be exercised unless you disable it or clear the flag")
+        elif f.enabled and f.kind in _FEATURE_KINDS:
+            hit = _danger.scan_feature(f)
+            if hit is not None:
+                warns.append(f"warning: feature {f.id!r} looks dangerous ({hit.reason()}); mark it dangerous "
+                             f"(it is then never clicked) or disable it, and fuzz only a disposable VM/profile "
+                             f"with test data. This keyword check is a heuristic, not a guarantee")
     if not any(f.enabled for f in p.features):
         errs.append("no enabled features")
 
     cids: set[str] = set()
     for c in p.controls:
         lbl = f"control {c.id!r}"
-        if not c.id:
+        if not c.id or not c.id.strip():
             errs.append("control with empty id")
+        elif c.id in fids:
+            warns.append(f"warning: id {c.id!r} is used by both a feature and a control; evidence and "
+                         f"replay refer to targets by id, so this is ambiguous")
         if c.id in cids:
             errs.append(f"duplicate control id {c.id!r}")
         cids.add(c.id)

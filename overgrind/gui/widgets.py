@@ -16,7 +16,46 @@ from . import theme
 PAGE_NAMES = ["Target", "Inspect", "Features", "Controls", "Plan", "Run", "Errors"]
 
 
-def friendly_issue(msg: str) -> tuple[str, str, int]:
+_Q = r"['\"]"
+_RULES: list[tuple[str, str]] = [
+    (r"^no enabled features$", "No features are switched on for testing. Add one from Inspect, or tick \u201cTest it\u201d on the Features page."),
+    (r"^no features", "No features yet. Add one from Inspect, or press Add feature manually."),
+    (r"^target is empty.*", "You have not chosen a program to test yet."),
+    (r"^unsupported schema_version (\S+)", "This project file comes from a different version of Overgrind (format {0})."),
+    (r"^feature '(.+?)': \w+ needs at least 2 states \(has (\d+)\)", "Feature '{0}' needs at least two states (it has {1})."),
+    (r"^feature '(.+?)': duplicate states", "Feature '{0}' lists the same state twice."),
+    (r"^feature '(.+?)': default_state '(.*?)' not in states .*", "Feature '{0}' starts as '{1}', which is not one of its states."),
+    (r"^duplicate (feature|control) id '(.+?)'", "Two {0}s use the same internal name '{1}'. Rename one of them."),
+    (r"^(?:feature|control) with empty id", "An item has no internal name. Remove it and add it again."),
+    (r"^control '(.+?)': scope references unknown feature '(.+?)'", "Control '{0}' is only changed while feature '{1}' is on, but that feature does not exist any more."),
+    (r"^control '(.+?)': default (.+) is outside the effective domain", "Control '{0}' starts as {1}, which is outside the range we will test. Change \u201cStarts as\u201d or widen the range."),
+    (r"^control '(.+?)': fuzz_domain is not a subset of domain \((.*)\)", "Control '{0}': the range we will test goes outside the app's own range ({1})."),
+    (r"^control '(.+?)' (?:domain|fuzz_domain): minimum (.+) > maximum (.+)", "Control '{0}': the lowest value ({1}) is higher than the highest ({2})."),
+    (r"^control '(.+?)' (?:domain|fuzz_domain): (.*)", "Control '{0}': problem with its value range: {1}"),
+    (r"^control '(.+?)': kind '.*' != domain kind '.*'", "Control '{0}': its type and its value range do not match."),
+    (r"^constraint #(\d+) \(mutex\): (.*)", "Rule {0}: {1}"),
+    (r"^constraint #(\d+) \(\w+\): unknown feature '(.+?)'", "Rule {0} uses feature '{1}', which does not exist any more. Remove the rule."),
+    (r"^constraint #(\d+) \((\w+)\): (.*)", "Rule {0}: {2}"),
+    (r"^feature '(.+?)' is marked dangerous and is enabled;.*", "Feature '{0}' is marked dangerous but is switched on, so it will be exercised. Untick \u201cTest it\u201d to leave it out."),
+    (r"^feature '(.+?)' looks dangerous \((.*?)\);.*", "Feature '{0}' looks dangerous ({1}). Tick \u201cDangerous\u201d on the Features page so it is never used by accident."),
+    (r"^run\.strategy_options has an unknown key '(.+?)'.*", "The plan has an option '{0}' that Overgrind does not know; it is ignored."),
+    (r"^run\.hang_threshold_ms .*exceeds case_timeout_ms.*", "The hang limit is longer than the time allowed for a whole test case, so hangs may never be reported."),
+    (r"^run\.op_timeout_ms .*exceeds case_timeout_ms.*", "One step may take longer than a whole test case is allowed to, so slow steps will be reported as hangs."),
+]
+
+
+def _plain(msg: str, names: dict[str, str]) -> str:
+    low = msg.strip()
+    for pat, out in _RULES:
+        m = re.match(pat, low, re.IGNORECASE)
+        if m:
+            low = out.format(*m.groups()); break
+    for fid, name in names.items():           # show what the tester named it, not the internal id
+        low = low.replace(f"'{fid}'", f"'{name}'")
+    return low
+
+
+def friendly_issue(msg: str, project=None) -> tuple[str, str, int]:
     """validate() string -> (level 'warn'|'fail', plain sentence, page index to fix on)."""
     level = "fail"
     text = msg.strip()
@@ -25,7 +64,7 @@ def friendly_issue(msg: str) -> tuple[str, str, int]:
     low = text.lower()
     if re.match(r"(control\b|control #)", low):
         page = 3
-    elif re.match(r"(feature\b|constraint\b|no enabled features|no features)", low):
+    elif re.match(r"(feature\b|constraint\b|no enabled features|no features|duplicate (feature|control))", low):
         page = 2
     elif re.search(r"\b(target|exe|process|window)\b", low):
         page = 0
@@ -33,6 +72,8 @@ def friendly_issue(msg: str) -> tuple[str, str, int]:
         page = 4
     else:
         page = 2
+    names = {f.id: (f.name or f.id) for f in project.features} if project is not None else {}
+    text = _plain(text, names)
     if text:
         text = text[0].upper() + text[1:]
         if text[-1] not in ".!?":
@@ -81,7 +122,7 @@ class PageBase(QWidget):
 
 
 def muted(text: str = "", wrap: bool = True) -> QLabel:
-    lab = QLabel(text); lab.setWordWrap(wrap)
+    lab = QLabel(text); lab.setWordWrap(wrap); lab.setTextFormat(Qt.TextFormat.PlainText)   # dynamic text: never parsed as markup
     lab.setStyleSheet(f"color:{theme.sem_hex('muted')};")
     return lab
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -86,7 +87,6 @@ class MainWindow(QMainWindow):
         self.session.statsUpdated.connect(lambda st: self._update_status())
         self.run_page.revalidate = self._recheck          # F5 / Start never trusts a stale (debounced) check
         HOST.unhandled.connect(self.report_unexpected)
-        self.destroyed.connect(lambda *_: _safe_disconnect(HOST.unhandled, self.report_unexpected))
         self._issue_timer = QTimer(self); self._issue_timer.setSingleShot(True); self._issue_timer.setInterval(150)
         self._issue_timer.timeout.connect(self._recheck)
         s = settings()
@@ -211,7 +211,7 @@ class MainWindow(QMainWindow):
             msgs = backend.validate(self.model.project)
         except Exception as e:  # noqa: BLE001
             msgs = [f"Project check failed: {e}"]
-        self.issues = [friendly_issue(m) for m in msgs]
+        self.issues = [friendly_issue(m, self.model.project) for m in msgs]
         self.run_page.set_issues(self.issues)
         self._decorate_stepper()
         self._show_banner()
@@ -221,26 +221,22 @@ class MainWindow(QMainWindow):
         if cur in (5, 6) or not self.issues:
             self.banner.setVisible(False); return
         mine = [x for x in self.issues if x[2] == cur]
-        if not mine:
-            blockers = [x for x in self.issues if x[0] == "fail"]
-            if not blockers:
-                self.banner.setVisible(False); return
-            first = blockers[0]
-            self.banner.setText(f"<b>Problem on another page:</b> {first[1]} <a href='{first[2]}'>Fix: go to {PAGE_NAMES[first[2]]}</a>"
-                                + (f" (and {len(blockers) - 1} more)" if len(blockers) > 1 else ""))
-            c = theme.sem("fail"); c.setAlpha(36)
-            self.banner.setStyleSheet(f"background:rgba({c.red()},{c.green()},{c.blue()},{c.alpha()});")
-            self.banner.setVisible(True); return
+        others = [x for x in self.issues if x[2] != cur and x[0] == "fail"]
+        if not mine and not others:
+            self.banner.setVisible(False); return
         lines = []
-        for level, text, page in mine[:3]:
+        for level, text, _page in mine[:3]:
             tag = "Problem" if level == "fail" else "Heads-up"
             col = theme.sem_hex("fail" if level == "fail" else "warn")
-            fix = ""
-            lines.append(f"<span style='color:{col}'><b>{tag}:</b></span> {text}{fix}")
+            lines.append(f"<span style='color:{col}'><b>{tag}:</b></span> {html.escape(text)}")
         if len(mine) > 3:
-            lines.append(f"...and {len(mine) - 3} more.")
+            lines.append(f"...and {len(mine) - 3} more on this page.")
+        if others:
+            first = others[0]
+            lines.append(f"<span style='color:{theme.sem_hex('fail')}'><b>Problem on another page:</b></span> {html.escape(first[1])} "
+                         f"<a href='{first[2]}'>Fix: go to {PAGE_NAMES[first[2]]}</a>" + (f" (and {len(others) - 1} more)" if len(others) > 1 else ""))
         self.banner.setText("<br>".join(lines))
-        worst = "fail" if any(x[0] == "fail" for x in mine) else "warn"
+        worst = "fail" if (others or any(x[0] == "fail" for x in mine)) else "warn"
         c = theme.sem(worst); c.setAlpha(36)
         self.banner.setStyleSheet(f"background:rgba({c.red()},{c.green()},{c.blue()},{c.alpha()});")
         self.banner.setVisible(True)
@@ -451,13 +447,6 @@ class MainWindow(QMainWindow):
         HOST.wait_tasks(3000)
         settings().setValue("geometry", self.saveGeometry())
         ev.accept()
-
-
-def _safe_disconnect(signal, slot) -> None:
-    try:
-        signal.disconnect(slot)
-    except (RuntimeError, TypeError):
-        pass
 
 
 def make_app(argv: list[str] | None = None) -> QApplication:

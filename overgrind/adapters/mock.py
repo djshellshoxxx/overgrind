@@ -25,14 +25,25 @@ from ..types import (
     Outcome, Project, Selector, TargetRef, Value,
 )
 
-def _png(w: int = 64, h: int = 48, rgb: tuple[int, int, int] = (235, 235, 240)) -> bytes:
+def _png(w: int = 160, h: int = 120, rgb: tuple[int, int, int] = (235, 235, 240)) -> bytes:
+    """A small, strictly valid 8-bit RGB PNG (signature, IHDR, one IDAT, IEND, correct CRCs), QImage-free.
+
+    Light background with a darker 2 px frame and a diagonal so a viewer can tell it rendered."""
     def chunk(tag: bytes, data: bytes) -> bytes:
         c = struct.pack(">I", len(data)) + tag + data
         return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
-    raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
+    dark = (90, 100, 130)
+    rows = []
+    for y in range(h):
+        row = bytearray()
+        for x in range(w):
+            frame = x < 2 or y < 2 or x >= w - 2 or y >= h - 2
+            diag = abs(x * h - y * w) < w            # thin diagonal
+            row += bytes(dark if (frame or diag) else rgb)
+        rows.append(b"\x00" + bytes(row))         # filter type 0 (None) per scanline
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+            + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
 
 
 _PNG = _png()

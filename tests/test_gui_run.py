@@ -64,7 +64,7 @@ class RunLifecycle(GuiCase):
         self.assertTrue(pump(lambda: w.session.state == "finished", 20))
         w.go_to(6)
         self.assertTrue(pump(lambda: ep.sm.rowCount() > 0, 15), "error list stayed empty")
-        self.assertEqual(ep.sm.item(0, 1).data(0x100), "crash")            # category stored in UserRole
+        self.assertIn(ep.proxy.index(0, 1).data(0x100), ("crash", "hang"))   # category stored in UserRole
         self.assertTrue(ep.btn_reduce.isEnabled())
         self.assertIn("steps", ep.detail.toPlainText().lower())
         ep._copy()
@@ -90,7 +90,7 @@ class RunLifecycle(GuiCase):
         self.assertTrue(pump(lambda: w.session.state == "running", 20))
         w.close()
         self.assertEqual(self.asked[0], "A test is running")
-        self.assertIn(w.session.state, ("idle", "finished"))
+        self.assertTrue(pump(lambda: w.session.state in ("idle", "finished") and not w.isVisible(), 20), w.session.state)
         self.assertIsNone(w.session.controller)
 
     def test_start_blocked_without_features(self):

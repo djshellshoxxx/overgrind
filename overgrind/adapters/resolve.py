@@ -49,7 +49,9 @@ def _applies(tier: str, sel: Selector) -> bool:
 def _tier_match(tier: str, sel: Selector, e: ElementInfo) -> bool:
     es = e.selector
     if tier == "auto_id":
-        return es.auto_id == sel.auto_id
+        # a different control type behind the same id (Button -> CheckBox) is a different control: never bind to it
+        return es.auto_id == sel.auto_id and ((not sel.control_type) or not e.control_type
+                                              or e.control_type == sel.control_type)
     if tier == "path+type":
         if tuple(es.path) != tuple(sel.path):
             return False

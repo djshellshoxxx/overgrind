@@ -190,8 +190,7 @@ class RunPage(PageBase):
 
     def risk_notes(self) -> list[str]:
         """Things the tester must knowingly accept before the first Start of this project version."""
-        notes = [f"'{f.name or f.id}' is marked dangerous and is switched on, so it will be exercised."
-                 for f in self.model.project.features if f.dangerous and f.enabled]
+        notes = [text for level, text, _p in self.issues if level == "warn" and "dangerous" in text.lower()]
         notes += [f"We could not verify the type or range of control '{c.id}'. We will try it anyway."
                   for c in self.model.project.controls if c.provenance.confidence == "unknown" and not c.skip]
         notes += [f"The preflight check failed for {r['element']}: {r['message']}" for r in self.preflight_blockers()]

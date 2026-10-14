@@ -26,9 +26,11 @@ def event_with(history, sig=None, **kw):
 
 class TestReliability(unittest.TestCase):
     def test_classes(self):
-        self.assertEqual(rd.classify_reliability([True, True]), "reliable")
+        self.assertEqual(rd.classify_reliability([True, True, True]), "reliable")
+        self.assertEqual(rd.classify_reliability([True, True]), "unconfirmed")        # n < 3: too few to say
         self.assertEqual(rd.classify_reliability([True, False, True]), "flaky")
-        self.assertEqual(rd.classify_reliability([False, False]), "not_reproducible")
+        self.assertEqual(rd.classify_reliability([False] * 5), "not_reproducible")
+        self.assertEqual(rd.classify_reliability([False, False]), "unconfirmed")      # n < 5
         self.assertEqual(rd.classify_reliability([]), "unconfirmed")
         self.assertEqual(rd.classify_reliability([Outcome(), crash()]), "flaky")
 
@@ -91,7 +93,7 @@ class TestDdmin(unittest.TestCase):
     def test_harness_errors_never_match(self):
         r = lambda a: Outcome(False, "harness", "elem missing")
         out = rd.Reducer(make_project(), runner=r).reduce(event_with([Action("invoke", "bug")]))
-        self.assertEqual(out.reliability, "not_reproducible")
+        self.assertEqual(out.reliability, "unconfirmed")        # harness replays are excluded, never "not reproduced"
 
     def test_budget(self):
         hist = [Action("control", "vol", i) for i in range(40)]

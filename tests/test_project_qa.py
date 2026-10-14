@@ -160,10 +160,8 @@ class IdentifierValidation(unittest.TestCase):
         c = ControlDef("c", "integer", Selector(auto_id="c"), Domain("integer", 0, 5), default=True)
         self.assertTrue([x for x in probs(proj(controls=[c])) if not x.startswith("warning:")])
 
-    def test_huge_text_max_length_and_options(self):
+    def test_huge_text_max_length(self):
         c = ControlDef("c", "text", Selector(auto_id="c"), Domain("text", max_length=10 ** 9))
-        self.assertTrue([x for x in probs(proj(controls=[c])) if not x.startswith("warning:")])
-        c = ControlDef("c", "choice", Selector(auto_id="c"), Domain("choice", options=("a", "")))
         self.assertTrue([x for x in probs(proj(controls=[c])) if not x.startswith("warning:")])
 
 

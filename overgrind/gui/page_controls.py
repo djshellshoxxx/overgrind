@@ -48,7 +48,7 @@ class ControlsPage(PageBase):
         self.body.addLayout(row)
 
         self.editor = QWidget(); ev = QVBoxLayout(self.editor); ev.setContentsMargins(0, 0, 0, 0)
-        self.e_title = QLabel(); f = self.e_title.font(); f.setBold(True); f.setPointSizeF(f.pointSizeF() * 1.15); self.e_title.setFont(f)
+        self.e_title = QLabel(); self.e_title.setTextFormat(Qt.TextFormat.PlainText); f = self.e_title.font(); f.setBold(True); f.setPointSizeF(f.pointSizeF() * 1.15); self.e_title.setFont(f)
         ev.addWidget(self.e_title)
         side = QHBoxLayout()
         orig = QGroupBox("Original: what the app says"); ol = QVBoxLayout(orig)
@@ -165,6 +165,12 @@ class ControlsPage(PageBase):
                 dec = 0 if k == "integer" else 6
                 for w in (self.n_min, self.n_max, self.n_step):
                     w.setDecimals(dec)
+                # The editor can only narrow the app's own range (going outside it is the Plan's "invalid values" option).
+                lo = c.domain.minimum if c.domain.minimum is not None else -1e12
+                hi = c.domain.maximum if c.domain.maximum is not None else 1e12
+                for w in (self.n_min, self.n_max):
+                    w.setRange(lo, hi)
+                self.n_step.setRange(0, max(hi - lo, 1))
                 self.n_min.setValue(d.minimum if d.minimum is not None else 0)
                 self.n_max.setValue(d.maximum if d.maximum is not None else 0)
                 self.n_step.setValue(d.step or 0)
@@ -202,8 +208,9 @@ class ControlsPage(PageBase):
         except Exception:
             reasons = []
         if reasons:
-            self.r_warn.setText("Warning: " + "; ".join(reasons) + ". Values outside the app's own range are only tried if you enable invalid values in Plan.")
-            self.r_warn.setStyleSheet(f"color:{theme.sem_hex('warn')};")
+            self.r_warn.setText("Problem: " + "; ".join(reasons) + ". Start is blocked until this is back inside the app's own range. "
+                                "To try out-of-range values on purpose, tick the invalid-values option on the Plan page instead.")
+            self.r_warn.setStyleSheet(f"color:{theme.sem_hex('fail')};")
 
     # ---- edits
     def _build_domain(self, c: ControlDef) -> Domain:
@@ -223,6 +230,13 @@ class ControlsPage(PageBase):
         c = self.current()
         if c is None or self._busy:
             return
+        if c.domain.kind in ("integer", "float") and self.n_min.value() > self.n_max.value():
+            # keep the range valid: the box the tester did NOT just edit follows
+            self._busy = True
+            try:
+                (self.n_max if self.sender() is self.n_min else self.n_min).setValue(self.n_min.value() if self.sender() is self.n_min else self.n_max.value())
+            finally:
+                self._busy = False
         nd = self._build_domain(c)
         new = None if nd == c.domain else nd
         if new == c.fuzz_domain:

@@ -13,6 +13,7 @@ cycle walking (``KeyedPermutation``): O(1) memory even for a 2^200 space.
 """
 from __future__ import annotations
 
+import math
 import random
 from typing import Sequence
 
@@ -316,9 +317,21 @@ class StateSpace:
         return str(self.size)
 
 
+def big_text(n: int, digits: int = 3) -> str:
+    """Compact, overflow-proof text for arbitrarily large non-negative integers (never float(n))."""
+    if n < 10 ** 15:
+        return f"{n:,}"
+    lg = math.log10(n)                      # exact enough for display; accepts any size of int
+    e = int(lg)
+    mant = 10 ** (lg - e)
+    if round(mant, digits - 1) >= 10:
+        mant, e = mant / 10, e + 1
+    return f"{mant:.{digits - 1}f}e+{e:02d}"
+
+
 def pow2_text(n: int | None) -> str:
     if n is None:
         return "?"
     if n > 1 and n & (n - 1) == 0:
         return f"2^{n.bit_length() - 1}"
-    return f"{n:,}" if n < 10 ** 15 else f"{n:.3e}"
+    return big_text(n, 4)

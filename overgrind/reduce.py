@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import copy
 import importlib
+import math
 import time
 from dataclasses import replace
 from typing import Any, Callable, Sequence
 
-from .evidence import capture_env, classify, outcome_fingerprint
+from .evidence import capture_env, classify, outcome_fingerprint, redact_reduced
 from .types import (
     Action, AdapterSpec, Case, ControlDef, ErrorEvent, HarnessError, Outcome, Project,
 )
@@ -24,15 +25,64 @@ class BudgetExceeded(Exception):
 
 
 # ------------------------------------------------------------------ reliability
+ALPHA = 0.05          # one-sided 95% bounds
+
+
 def classify_reliability(results: Sequence[Any]) -> str:
-    """results: bools or Outcomes (True / not ok == reproduced)."""
+    """results: bools or Outcomes (True / not ok == reproduced). Labels follow spec U3 3.1:
+
+    reliable        every one of n >= 3 replays reproduced (p >= 0.37 at 95%)
+    flaky           0 < r < n
+    not_reproducible none of n >= 5 replays reproduced (p <= 0.45 at 95%: 'may still exist at that rate')
+    unconfirmed     anything else (too few replays to say more)
+    """
     flags = [(not r.ok) if isinstance(r, Outcome) else bool(r) for r in results]
     if not flags:
         return "unconfirmed"
-    n = sum(flags)
-    if n == len(flags):
-        return "reliable"
-    return "flaky" if n else "not_reproducible"
+    n, r = len(flags), sum(flags)
+    if r == n:
+        return "reliable" if n >= 3 else "unconfirmed"
+    if r:
+        return "flaky"
+    return "not_reproducible" if n >= 5 else "unconfirmed"
+
+
+def _binom_cdf(k: int, n: int, p: float) -> float:
+    return sum(math.comb(n, i) * p ** i * (1 - p) ** (n - i) for i in range(k + 1))
+
+
+def reproduce_lower_bound(r: int, n: int, alpha: float = ALPHA) -> float:
+    """One-sided exact (Clopper-Pearson) lower bound on the per-replay reproduction probability."""
+    if n <= 0 or r <= 0:
+        return 0.0
+    if r >= n:
+        return alpha ** (1.0 / n)
+    lo, hi = 0.0, 1.0                    # P(X >= r | p) is increasing in p; find where it equals alpha
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if 1.0 - _binom_cdf(r - 1, n, mid) > alpha:
+            hi = mid
+        else:
+            lo = mid
+    return (lo + hi) / 2
+
+
+def reproduce_upper_bound(r: int, n: int, alpha: float = ALPHA) -> float:
+    """One-sided exact upper bound (r == 0 gives 1 - alpha**(1/n): 'not reproduced in n tries')."""
+    if n <= 0:
+        return 1.0
+    if r >= n:
+        return 1.0
+    if r == 0:
+        return 1.0 - alpha ** (1.0 / n)
+    lo, hi = 0.0, 1.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if _binom_cdf(r, n, mid) > alpha:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
 
 
 # ------------------------------------------------------------------ actions from a case
@@ -168,13 +218,17 @@ def shrink_candidates(value: Any, default: Any, kind: str = "") -> list:
     elif isinstance(value, (int, float)) and isinstance(default, (int, float)) and not isinstance(default, bool):
         if isinstance(value, int) and isinstance(default, int):
             diff = value - default
-            while abs(diff) > 1:
-                diff = int(diff / 2)  # trunc toward 0
-                c.append(default + diff)
+            sign, mag = (1 if diff > 0 else -1), abs(diff)
+            while mag > 1:
+                mag //= 2                                           # exact integer bisection (huge ints ok)
+                c.append(default + sign * mag)
             c.append(default + (1 if value > default else -1))
         else:
-            diff = float(value) - float(default)
-            for _ in range(12):
+            try:
+                diff = float(value) - float(default)
+            except OverflowError:
+                diff = 0.0
+            for _ in range(12 if diff else 0):
                 diff /= 2
                 c.append(float(default) + diff)
     elif isinstance(value, str):
@@ -220,6 +274,8 @@ class Reducer:
         self._baseline_sig: str | None = None
         self._target_sig = ""
         self._best: list | None = None
+        self._neg_retries = 0            # extra tries of a negative candidate (flaky targets)
+        self._partial_reason = ""
 
     def close(self) -> None:
         if self._own_runner and hasattr(self.runner, "close"):
@@ -241,39 +297,101 @@ class Reducer:
     def _test(self, actions: list) -> bool:
         key = tuple((a.kind, a.target, repr(a.value)) for a in actions)
         if key not in self._cache:
-            self._cache[key] = self._same(self._replay(actions))
+            res = self._same(self._replay(actions))
+            tries = 0
+            while not res and tries < self._neg_retries:      # flaky: a miss is weak evidence, retry it
+                tries += 1
+                res = self._same(self._replay(actions))
+            self._cache[key] = res
         return self._cache[key]
 
     # -- main
-    def reduce(self, event: ErrorEvent) -> ErrorEvent:
-        self._reset_budget()
-        self._target_sig = event.signature
-        orig = list(event.history) or actions_from_case(self.project, event.case)
+    @staticmethod
+    def _cut(history: list) -> tuple[list, bool]:
+        """Prefix cut (spec 3.3 step 1): start at the last `reset`; without one the pre-state is unknown."""
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].kind == "reset":
+                return history[i:], False
+        return history, True
+
+    def _confirm(self, orig: list, event: ErrorEvent) -> list[Outcome]:
+        """Replay the failing sequence: n0 = max(confirm_runs, 3); no repro -> 5 (10 for hang/resource);
+        mixed -> 10. Harness errors are not counted (retried at most twice in total)."""
         results: list[Outcome] = []
-        exhausted = False
-        steps = orig
-        try:
-            # (1) reliability: replay the unmodified failing sequence
-            for _ in range(self.confirm_runs):
+        harness = 0
+
+        def until(n: int) -> bool:
+            nonlocal harness
+            while len(results) < n:
                 out = self._replay(orig)
+                if not out.ok and out.category == "harness":
+                    harness += 1
+                    if harness > 2:
+                        return False
+                    continue
                 results.append(out)
-                if not out.ok and out.category != "harness" and self._baseline_sig is None:
+                if not out.ok and self._baseline_sig is None:
                     sig = outcome_fingerprint(out)
                     if sig == event.signature or out.category == event.category:
                         self._baseline_sig = sig
+            return True
+
+        if not until(max(self.confirm_runs, 3)):
+            return results
+        r = sum(self._same(o) for o in results)
+        if r == 0:
+            until(10 if event.category in ("hang", "resource") else 5)
+        elif r < len(results):
+            until(10)
+        return results
+
+    def reduce(self, event: ErrorEvent) -> ErrorEvent:
+        self._reset_budget()
+        self._target_sig = event.signature
+        full = list(event.history)
+        unknown_pre = False
+        if full:
+            orig, unknown_pre = self._cut(full)
+        else:
+            orig = full = actions_from_case(self.project, event.case)
+        results: list[Outcome] = []
+        exhausted = False
+        steps = orig
+        repro: list[bool] = []
+        try:
+            # (1) reliability: replay the unmodified failing sequence (original observation not counted)
+            results = self._confirm(orig, event)
             repro = [self._same(o) for o in results]
             reliability = classify_reliability(repro)
-            if reliability != "not_reproducible":
+            if any(repro):
+                if 0 < sum(repro) < len(repro):
+                    p_hat = sum(repro) / len(repro)
+                    need = math.ceil(math.log(ALPHA) / math.log(1.0 - p_hat))
+                    self._neg_retries = min(10, need) - 1
+                    if need > 10:
+                        self._partial_reason = "low reproduction rate: negative candidates were retried only 10 times"
                 steps = self._minimise(orig)
         except BudgetExceeded:
             exhausted = True
             repro = [self._same(o) for o in results]
             reliability = classify_reliability(repro) if repro else "unconfirmed"
             steps = self._best or orig
-        reduced = self._build_reduced(event, orig, steps, reliability, repro, exhausted)
+        reduced = self._build_reduced(event, full, steps, reliability, repro, exhausted)
+        sens = [c.id for c in self.project.controls if c.sensitive]
+        if sens:                                   # same redaction as on disk, whoever ends up writing it
+            reduced = redact_reduced(reduced, sens)
+        if unknown_pre:
+            reduced["assumes_unknown_prestate"] = True
+        if self._partial_reason:
+            reduced["partial"], reduced["reason"] = True, self._partial_reason
         new = copy.deepcopy(event)
         new.reduced = reduced
         new.reliability = reliability
+        n, k = len(repro), sum(repro)
+        if n:
+            new.env = dict(new.env)
+            new.env["reliability"] = {"n": n, "r": k, "p_lo": round(reproduce_lower_bound(k, n), 4),
+                                      "p_hi": round(reproduce_upper_bound(k, n), 4), "level": 0.95}
         if self.store is not None:
             try:
                 path = self.store.write_reduced(event, reduced)
@@ -338,6 +456,7 @@ class Reducer:
             "reliability": reliability,
             "reliability_pct": round(100.0 * k / n) if n else None,
             "confirm": {"reproduced": k, "runs": n},
+            "version": 1,
             "original_steps": len(orig),
             "reduced_steps": len(steps),
             "steps": [{"kind": a.kind, "target": a.target, "value": a.value} for a in steps],

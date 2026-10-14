@@ -13,6 +13,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from collections import deque
 from dataclasses import asdict
 from pathlib import Path
@@ -159,53 +160,90 @@ def redact_text(text: str) -> str:
     return _SECRET_TEXT.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
 
 
-def _redact_obj(o: Any) -> Any:
+MIN_SCRUB_LEN = 4        # shorter secrets would mangle ordinary text when scrubbed from free-form fields
+
+
+def scrub_literals(text: str, secrets: Iterable[str]) -> str:
+    """Replace every literal occurrence of a known sensitive value (longest first)."""
+    for sv in sorted((x for x in set(secrets) if isinstance(x, str) and len(x) >= MIN_SCRUB_LEN),
+                     key=len, reverse=True):
+        if sv in text:
+            text = text.replace(sv, REDACTED)
+    return text
+
+
+def _redact_obj(o: Any, secrets: Iterable[str] = ()) -> Any:
     if isinstance(o, str):
-        return redact_text(o)
+        return scrub_literals(redact_text(o), secrets)
     if isinstance(o, dict):
         return {k: (REDACTED if isinstance(k, str) and _SECRET_NAME.search(k) and o[k] not in (None, "")
-                    else _redact_obj(v)) for k, v in o.items()}
+                    else _redact_obj(v, secrets)) for k, v in o.items()}
     if isinstance(o, (list, tuple)):
-        return [_redact_obj(x) for x in o]
+        return [_redact_obj(x, secrets) for x in o]
     return o
 
 
 def redact_event(event: ErrorEvent, sensitive: Iterable[str] = ()) -> ErrorEvent:
-    """Return a redacted deep copy; the input is untouched."""
+    """Return a redacted deep copy; the input is untouched.
+
+    A control is hidden when its id is in ``sensitive`` or looks like a secret (password/token/...).
+    Its values are replaced by ``***`` in the case and the action history, and every literal copy of
+    those values is scrubbed from the message, env and the other free-form fields (an app that echoes
+    its input in the crash text must not leak it through there)."""
     sens = set(sensitive)
     ev = copy.deepcopy(event)
 
     def hidden(name: str) -> bool:
         return name in sens or bool(_SECRET_NAME.search(name or ""))
 
+    secrets = {v for k, v in ev.case.values.items() if hidden(k) and isinstance(v, str)}
+    secrets |= {a.value for a in ev.history if a.kind == "control" and hidden(a.target) and isinstance(a.value, str)}
     ev.case = Case(
         seq=ev.case.seq, state=dict(ev.case.state),
-        values={k: (REDACTED if hidden(k) and v not in (None, "") else _redact_obj(v))
+        values={k: (REDACTED if hidden(k) and v not in (None, "") else _redact_obj(v, secrets))
                 for k, v in ev.case.values.items()},
         order=tuple(ev.case.order), dwell_ms=ev.case.dwell_ms, tags=tuple(ev.case.tags))
     ev.history = [
         Action(a.kind, a.target,
                REDACTED if (hidden(a.target) and a.kind == "control" and a.value not in (None, ""))
-               else _redact_obj(a.value), a.t_ms, a.ok)
+               else _redact_obj(a.value, secrets), a.t_ms, a.ok)
         for a in ev.history]
-    ev.message = redact_text(ev.message)
-    ev.env = _redact_obj(ev.env)
+    ev.message = scrub_literals(redact_text(ev.message), secrets)
+    ev.env = _redact_obj(ev.env, secrets)
     if ev.reduced is not None:
-        ev.reduced = redact_reduced(ev.reduced, sens)
+        ev.reduced = redact_reduced(ev.reduced, sens, secrets)
     return ev
 
 
-def redact_reduced(reduced: dict[str, Any], sensitive: Iterable[str] = ()) -> dict[str, Any]:
+def redact_reduced(reduced: dict[str, Any], sensitive: Iterable[str] = (),
+                   secrets: Iterable[str] = ()) -> dict[str, Any]:
     sens = set(sensitive)
     r = copy.deepcopy(reduced)
+
+    def hid(t: str) -> bool:
+        return t in sens or bool(_SECRET_NAME.search(t))
+
+    sec = set(secrets)
+    for st in r.get("steps", []):
+        if st.get("kind") == "control" and hid(str(st.get("target", ""))) and isinstance(st.get("value"), str):
+            sec.add(st["value"])
+    if isinstance(r.get("values"), dict):
+        sec |= {v for k, v in r["values"].items() if hid(k) and isinstance(v, str)}
     for st in r.get("steps", []):
         t = str(st.get("target", ""))
-        if st.get("kind") == "control" and (t in sens or _SECRET_NAME.search(t)) and st.get("value") not in (None, ""):
+        if st.get("kind") == "control" and hid(t) and st.get("value") not in (None, ""):
             st["value"] = REDACTED
+        elif isinstance(st.get("value"), str):
+            st["value"] = scrub_literals(st["value"], sec)
     if isinstance(r.get("values"), dict):
         for k in list(r["values"]):
-            if (k in sens or _SECRET_NAME.search(k)) and r["values"][k] not in (None, ""):
+            if hid(k) and r["values"][k] not in (None, ""):
                 r["values"][k] = REDACTED
+            else:
+                r["values"][k] = _redact_obj(r["values"][k], sec)
+    for key in ("message", "env"):
+        if key in r:
+            r[key] = _redact_obj(r[key], sec)
     return r
 
 
@@ -238,6 +276,20 @@ def event_from_dict(d: dict[str, Any]) -> ErrorEvent:
         reduced=d.get("reduced"))
 
 
+def replace_with_retry(src: Any, dst: Any, attempts: int = 8) -> None:
+    """os.replace that rides out Windows sharing violations (the GUI or an AV scanner has the file open)."""
+    delay = 0.01
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     """temp file in the same dir + fsync + os.replace. A crash leaves the old file intact."""
     path = Path(path)
@@ -251,7 +303,7 @@ def atomic_write_text(path: Path, text: str) -> None:
                 os.fsync(f.fileno())
             except OSError:
                 pass
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -301,8 +353,17 @@ class EvidenceStore:
     def attachments_dir(self, signature: str, event_id: str) -> Path:
         return self.dir / "errors" / _safe(signature) / _safe(event_id)
 
+    def _has_incidents(self, signature: str) -> bool:
+        d = self.dir / "errors" / _safe(signature)
+        try:
+            return d.is_dir() and any(d.glob("*.json"))
+        except OSError:
+            return False
+
     def known(self, signature: str) -> bool:
-        return signature in self._read_index()
+        """True if the signature was seen: in the index, or (after a crash between the incident file
+        and the index write) as an incident file on disk."""
+        return signature in self._read_index() or self._has_incidents(signature)
 
     def counts(self) -> dict[str, int]:
         return {s: int(e.get("count", 1)) for s, e in self._read_index().items()}
@@ -316,11 +377,11 @@ class EvidenceStore:
         """
         if event.category == "harness":
             raise ValueError("harness errors are not app defects and are not stored as errors")
+        ev = redact_event(event, self.sensitive)          # everything below (index included) sees only this copy
         idx = self._read_index()
         ent = idx.get(event.signature)
         if ent is None:
-            ent = {"count": 0, "category": event.category, "message": event.message[:200],
-                   "first_ts": event.ts, "last_ts": event.ts, "ids": []}
+            ent = self._recover_entry(event.signature, ev)
             idx[event.signature] = ent
         ent["count"] = int(ent.get("count", 0)) + 1
         ent["last_ts"] = event.ts
@@ -328,7 +389,6 @@ class EvidenceStore:
             self._write_index(idx)
             return str(self.incident_path(event.signature, ent["ids"][-1]))
 
-        ev = redact_event(event, self.sensitive)
         ev.count = 1
         adir = self.attachments_dir(ev.signature, ev.id)
         if attachment_files:
@@ -340,16 +400,30 @@ class EvidenceStore:
                 shutil.copyfile(src, dst)
                 ev.attachments[name] = dst.relative_to(self.dir).as_posix()
         path = self.incident_path(ev.signature, ev.id)
-        atomic_write_text(path, json.dumps(event_to_dict(ev), indent=1))
+        atomic_write_text(path, json.dumps(event_to_dict(ev), indent=1, default=str))
         ent["ids"].append(_safe(ev.id))
         self._write_index(idx)
         self.enforce_retention()
         return str(path)
 
+    def _recover_entry(self, signature: str, event: ErrorEvent | None = None) -> dict[str, Any]:
+        """Index entry for a signature (rebuilt from incident files if the index lost it)."""
+        ids: list[str] = []
+        d = self.dir / "errors" / _safe(signature)
+        try:
+            ids = sorted(p.stem for p in d.glob("*.json")) if d.is_dir() else []
+        except OSError:
+            ids = []
+        ts = event.ts if event is not None else ""
+        return {"count": len(ids), "category": event.category if event else "", "ids": ids,
+                "message": (event.message[:200] if event else ""), "first_ts": ts, "last_ts": ts}
+
     def bump(self, signature: str, n: int = 1) -> int:
         idx = self._read_index()
         if signature not in idx:
-            raise KeyError(signature)
+            if not self._has_incidents(signature):
+                raise KeyError(signature)
+            idx[signature] = self._recover_entry(signature)
         idx[signature]["count"] = int(idx[signature].get("count", 0)) + n
         self._write_index(idx)
         return idx[signature]["count"]
@@ -407,7 +481,7 @@ class EvidenceStore:
         """Write <id>/reduced.json next to the (untouched) incident file."""
         d = self.attachments_dir(event.signature, event.id)
         path = d / "reduced.json"
-        atomic_write_text(path, json.dumps(redact_reduced(reduced, self.sensitive), indent=1))
+        atomic_write_text(path, json.dumps(redact_reduced(reduced, self.sensitive), indent=1, default=str))
         return str(path)
 
     # -- retention

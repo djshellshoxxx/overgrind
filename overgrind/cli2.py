@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import multiprocessing
 import sys
 from pathlib import Path
@@ -22,7 +23,17 @@ class UsageError(Exception):
 
 
 def _dump(obj: Any) -> None:
-    print(json.dumps(obj, indent=None, default=_default, ensure_ascii=False))
+    # pure-ASCII JSON: survives a legacy Windows console code page (cp1252/cp850) and pipes alike
+    print(json.dumps(obj, indent=None, default=_default, ensure_ascii=True))
+
+
+def _tolerant_stdio() -> None:
+    """Never die with UnicodeEncodeError on a legacy-codepage Windows console (messages may be non-ASCII)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")        # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
 
 
 def _default(o: Any) -> Any:
@@ -43,6 +54,15 @@ def _spec(factory: str, kwargs: str | None) -> AdapterSpec:
     return AdapterSpec(factory, kw)
 
 
+def _finite_positive(name: str, v: float | int | None, integer: bool = False) -> None:
+    if v is None:
+        return
+    if isinstance(v, float) and not math.isfinite(v):
+        raise UsageError(f"{name} must be a finite number (got {v})")
+    if v <= 0:
+        raise UsageError(f"{name} must be greater than 0 (got {v})")
+
+
 def _load(path: str):
     from . import project as P
     try:
@@ -50,8 +70,12 @@ def _load(path: str):
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise UsageError(f"cannot load project {path}: {exc}") from exc
     problems = P.validate(p)
-    if problems:
-        raise UsageError("invalid project:\n  " + "\n  ".join(problems))
+    errors = [m for m in problems if not m.startswith("warning:")]
+    for m in problems:
+        if m.startswith("warning:"):
+            print(f"overgrind: {m}", file=sys.stderr)
+    if errors:
+        raise UsageError("invalid project:\n  " + "\n  ".join(errors))
     return p
 
 
@@ -117,6 +141,9 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_run(a: argparse.Namespace) -> int:
     from .controller import RunController
     p = _load(a.project)
+    _finite_positive("--max-seconds", a.max_seconds)
+    _finite_positive("--max-cases", a.max_cases)
+    _finite_positive("--max-unique-errors", a.max_unique_errors)
     sc = StopConditions(until_stopped=a.max_seconds is None and a.max_cases is None,
                         max_seconds=a.max_seconds, max_cases=a.max_cases,
                         first_error=a.first_error, max_unique_errors=a.max_unique_errors)
@@ -169,7 +196,7 @@ def cmd_reduce(a: argparse.Namespace) -> int:
     from . import evidence
     from .reduce import Reducer
     p = _load(a.project)
-    store = evidence.EvidenceStore(a.evidence)
+    store = evidence.EvidenceStore(a.evidence, sensitive=[c.id for c in p.controls if c.sensitive])
     try:
         ev = store.load(a.event_id)
     except (KeyError, OSError, ValueError) as exc:
@@ -208,7 +235,7 @@ def cmd_preview(a: argparse.Namespace) -> int:
 def cmd_migrate(a: argparse.Namespace) -> int:
     from . import project as P
     try:
-        data = json.loads(Path(a.src).read_text(encoding="utf-8"))
+        data = json.loads(Path(a.src).read_text(encoding="utf-8-sig"))
         p = P.migrate_v1(data)
         P.save(p, a.dst)
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -224,6 +251,7 @@ COMMANDS = {"run": cmd_run, "preflight": cmd_preflight, "errors": cmd_errors, "r
 
 def main(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
+    _tolerant_stdio()
     try:
         args = build_parser().parse_args(argv)
     except SystemExit as exc:           # argparse: 0 for --help, 2 for usage errors

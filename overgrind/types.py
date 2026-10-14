@@ -100,7 +100,7 @@ class RunConfig:
     pause_counts_toward_time: bool = False
     ring_size: int = 200
     invalid_values: bool = False    # opt-in out-of-range probing
-    confirm_runs: int = 2           # replays used to classify reliability
+    confirm_runs: int = 3           # MINIMUM replays used to classify reliability (>=2; 'reliable' needs n>=3)
     capture_screenshot: bool = True
     capture_dump: bool = False
 
@@ -197,6 +197,14 @@ class Coverage:
     buckets_total: int = 0
     buckets_visited: int = 0
     guarantee: str = ""             # honest human-readable statement of what has been covered
+    # --- additive (v0.2 QA): ledger detail for the Atlas; every field defaults to "unknown/none"
+    infeasible: int = 0             # t-way tuples proved impossible by constraints (excluded from tway_total)
+    unknown: int = 0                # t-way tuples whose feasibility the solver could not decide (in tway_total)
+    evidence: str = ""              # what 'visited' means: attempted | applied | verified ("" = attempted)
+    state_counts: tuple[int, ...] = ()   # visits per valid state, by rank (scheduler.unrank_state); saturates at 255;
+                                         # only when the space has <= 4096 states, else ()
+    visit_hist: tuple[int, ...] = ()     # histogram: [k] = number of valid states visited exactly k times (last bin = 8+);
+                                         # sums to states_total (state_cover only)
 
 @dataclass(frozen=True)
 class RunStats:

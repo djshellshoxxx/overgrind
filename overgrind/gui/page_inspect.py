@@ -1,9 +1,11 @@
 """Step 2: scan the app, read the element tree, add features/controls."""
 from __future__ import annotations
 
+import html
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QSplitter,
+    QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QSizePolicy, QSplitter,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -45,12 +47,14 @@ class InspectPage(PageBase):
         dv.addWidget(self.d_empty)
         self.d_body = QWidget(); db = QVBoxLayout(self.d_body); db.setContentsMargins(0, 0, 0, 0); db.setSpacing(6)
         self.d_name = QLabel(); f = self.d_name.font(); f.setPointSizeF(f.pointSizeF() * 1.3); f.setBold(True); self.d_name.setFont(f)
-        self.d_name.setWordWrap(True)
+        self.d_name.setWordWrap(True); self.d_name.setTextFormat(Qt.TextFormat.PlainText)
+        self.d_name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         db.addWidget(self.d_name)
         form = QFormLayout(); form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.d_type = QLabel(); self.d_addr = QLabel(); self.d_value = QLabel(); self.d_patterns = QLabel(); self.d_bounds = QLabel()
         for w in (self.d_type, self.d_addr, self.d_value, self.d_patterns, self.d_bounds):
-            w.setWordWrap(True); w.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            w.setWordWrap(True); w.setTextFormat(Qt.TextFormat.PlainText); w.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)      # a long unbroken name wraps/clips, never widens the page
         form.addRow("Type:", self.d_type); form.addRow("Address:", self.d_addr); form.addRow("Current value:", self.d_value)
         form.addRow("Can do:", self.d_patterns); form.addRow("Position:", self.d_bounds)
         db.addLayout(form)
@@ -96,7 +100,7 @@ class InspectPage(PageBase):
 
     def _scan_failed(self, msg: str) -> None:
         self.btn_scan.setEnabled(True); self.status.setText("")
-        self._placeholder(f"We could not scan the program. {msg}<br>If you only want to look around, open the demo from File &gt; Open demo project.")
+        self._placeholder(f"We could not scan the program. {html.escape(msg)}<br>If you only want to look around, open the demo from File &gt; Open demo project.")
 
     def _placeholder(self, html: str) -> None:
         self.tree.clear(); self._items = []
@@ -178,18 +182,18 @@ class InspectPage(PageBase):
         kind = e.suggested_kind
         if kind:
             extra = f" ({backend.describe_domain(e.suggested_domain)})" if e.suggested_domain else ""
-            self.d_suggest.setText(f"<b>Looks like:</b> {self._friendly_kind(kind)}{extra}")
+            self.d_suggest.setText(f"<b>Looks like:</b> {html.escape(self._friendly_kind(kind))}{html.escape(extra)}")
         else:
             self.d_suggest.setText("<b>Looks like:</b> we could not tell. You will need to confirm the type and range.")
         self.badge.set_confidence(e.confidence if e.confidence in theme.CONFIDENCE else "unknown")
         rep = backend.selector_report(e.selector)
         word, colour = backend.score_label(rep.score)
         self.meter.set_score(rep.score, word, colour)
-        parts = [f"<b>Why:</b> {rep.reason or 'No reason given.'}"]
+        parts = [f"<b>Why:</b> {html.escape(rep.reason) or 'No reason given.'}"]
         if rep.estimated:
             parts.append("<i>(Quick estimate; the full locator check is not available in this build.)</i>")
         if rep.fixes and rep.score < 90:
-            parts.append("<b>How to improve it:</b><ul style='margin:0'>" + "".join(f"<li>{f}</li>" for f in rep.fixes) + "</ul>")
+            parts.append("<b>How to improve it:</b><ul style='margin:0'>" + "".join(f"<li>{html.escape(f)}</li>" for f in rep.fixes) + "</ul>")
         self.d_why.setText("<br>".join(parts))
         self.fallbacks.clear()
         for n, (desc, sc) in enumerate(rep.fallbacks, 1):
@@ -211,7 +215,7 @@ class InspectPage(PageBase):
         if not e:
             return
         if any(f.selector == e.selector for f in self.model.project.features):
-            self.msg.setText("Already in your features."); return
+            self.msg.setText("Already in your features."); self.msg.setStyleSheet(""); return
         fid = self.model.unique_id(e.selector.auto_id or e.name)
         prov = Provenance("uia", e.confidence if e.confidence in ("verified", "inferred") else "unknown", "added from Inspect")
         dom = e.suggested_domain
@@ -223,7 +227,7 @@ class InspectPage(PageBase):
             on = str(e.value).lower() in ("true", "on", "1", "checked")
             f = FeatureDef(fid, e.name or fid, "toggle", ("off", "on"), "on" if on else "off", e.selector, provenance=prov)
         self.model.add_feature(f)
-        self.msg.setText(f"Added feature <b>{f.name}</b>. Review it on the Features page.")
+        self.msg.setText(f"Added feature <b>{html.escape(f.name)}</b>. Review it on the Features page.")
         self.msg.setStyleSheet(f"color:{theme.sem_hex('ok')};")
 
     def _add_control(self) -> None:
@@ -239,7 +243,7 @@ class InspectPage(PageBase):
         c = ControlDef(cid, dom.kind, e.selector, dom, None, e.value, provenance=Provenance("uia", conf, "added from Inspect"))
         self.model.add_control(c)
         if known:
-            self.msg.setText(f"Added control <b>{e.name or cid}</b>. Review its range on the Controls page.")
+            self.msg.setText(f"Added control <b>{html.escape(e.name or cid)}</b>. Review its range on the Controls page.")
             self.msg.setStyleSheet(f"color:{theme.sem_hex('ok')};")
         else:
             self.msg.setText("Added, but we could not tell the type or range. Please set them on the Controls page; we never guess silently.")
