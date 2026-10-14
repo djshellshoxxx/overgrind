@@ -1,6 +1,7 @@
 # Overgrind v0.2: Standalone continuous application GUI fuzzing
 Status: **proposed specification**. Not implemented by the current v0.1 CLI.
 Target: Windows 10/11 x64, packaged GUI executable, optionally installed or portable.
+Scope: **General-purpose black-box Windows GUI applications across frameworks and industries**, including Win32/MFC, WinForms, WPF, WinUI, Qt, Electron/WebView, Java, Delphi, legacy enterprise and custom-drawn GUIs. This list represents target compatibility goals; actual interaction depends on accessible controls, automation permissions, and adapters. No source code or special app integration is required in the default workflow. See [product scope and differentiation](../strategy/windows-gui-fuzzing-differentiation.md).
 
 ## Product intent and essential correction
 
@@ -51,7 +52,7 @@ Separate GUI-driver errors from app-under-test failures:
 - UIA state read-back mismatch or invariant/assertion violated (requires observation oracle).
 - Unexpected modal dialog / runtime error dialog.
 - Performance threshold violation (CPU, memory, handles, threads, sustained latency, launch hang). Unusual resource utilization is not automatically a defect unless threshold/oracle configured.
-- For developer-instrumented builds: sanitizer failures, logged asserts, playback underruns, audio glitches, rendering errors, data mismatch and other app-specific diagnostic counters.
+- For optional developer-instrumented builds: sanitizer failures, logged assertions, rendering or calculation errors, application-specific diagnostic counters and domain-specific validations. None is required to fuzz a normal installed Windows app.
 - Missing UI controls, undesired state persistence, or visual anomalies need explicit assertions/baselines; generic UIA cannot know intended output.
 
 **No successful-case log records by default.** Maintain per-worker in-memory counters and a bounded last-N actions ring buffer. On failure, atomically persist an **error event** (JSON metadata and optional external evidence) containing:
@@ -68,7 +69,7 @@ If successes are not persisted, deterministic replay requires saving the full re
 Preserve the proven Python core and current adapter protocol where possible; avoid a premature wholesale rewrite. Proposed packaging:
 - Windows GUI: PySide6 (Qt widgets) or another proven native-capable toolkit. Bundle Python interpreter and dependencies using PyInstaller/Nuitka into an installer or self-contained folder/executable. No Python install should be required by end users.
 - Core model: typed, versioned immutable project manifests; migrations, validation, original vs limited ranges, separate feature states vs events.
-- Discovery plugins: Windows UIA (current pywinauto) + alternate Win32 API; optional image-based element targeting for GUIs lacking accessibility metadata (fragile, opt-in); adapter contract for custom drawn JUCE controls and developer-provided control registry.
+- Discovery plugins: Windows UIA (current pywinauto) + alternate Win32 API; optional image-based element targeting for GUIs lacking accessibility metadata (fragile, opt-in); adapter contracts for inaccessible custom-drawn controls across frameworks and optional developer-provided control registries.
 - Windows controller process: GUI config, session management, dashboard, pause/stop/cancel, error event subscriptions, resource budgets, target PID/window identity. **Separate worker process** makes it possible to detect and terminate a stuck UIA call, then restart only the worker.
 - Persistent campaign scheduler: bounded memory; supports unbounded runtime, seed checkpoints, valid configuration enumeration when small, covering arrays or lazy state-space sampling when large; no global 250,000-case limit for indefinite mode.
 - Target adapter: discover, set state, get state, apply control, activate action, reset, wait for quiescence, health check, screenshot; capabilities discovered at runtime rather than assuming generic toggles are safe.
@@ -98,8 +99,8 @@ Avoid requiring administrator privileges unless the target or requested diagnost
 - P1-02: Pairwise/3-wise value coverage using constraints and finite parameter bucketing (e.g. PICT), with coverage accounting.
 - P1-03: Resource trend metrics, leak detection heuristics and configurable health oracles.
 - P1-04: Repro one-click and reduced reproducer export; confirm failures after restart.
-- P1-05: Custom-drawn JUCE/Qt input bridges and test-only diagnostics.
-- P1-06: Configurable random event order, inter-event timing, audio playback changes and multi-minute stress holds.
+- P1-05: Framework-neutral custom-control bridges (Win32, WPF, Qt, Electron, Java and others) and optional developer-specific diagnostics.
+- P1-06: Configurable random event order, inter-event timing, window resizing, focus transitions, modal dialogs, multi-minute stress holds and optional app-specific operations.
 
 **P2**: adaptive coverage heuristics, runtime-guided fuzz feedback, distributed workers, CI-agent mode, rich reports and app-specific plugins.
 
@@ -116,7 +117,7 @@ Avoid requiring administrator privileges unless the target or requested diagnost
 - Crash/hang target fixture: distinguish worker failure and target failure; emit one structured error evidence package per incident; optional target restart and continued run.
 - Repro: recorded failing-case action list and checkpoint reproduce deterministic fixture failure.
 - Inspector: read-only; UIA snapshot does not modify target. Never accept a guessed type/range silently.
-- Windows smoke tests: standard WinForms/WPF test app, a custom-drawn synthetic surface, scaled display, DPI changes, multiple monitors, elevation differences, window title changes, locked desktop behavior.
+- Windows smoke tests: Win32, WinForms, WPF, Qt, Electron/WebView, Java UI fixtures when feasible, a custom-drawn synthetic surface, scaled display, DPI changes, multiple monitors, elevation differences, window title changes, locked desktop behavior.
 - Exit and unattended runs: when process/window target changes, stop or reattach only according to explicit user policy; never accidentally inject events into another process.
 
 ## Suggested implementation sequence and modular boundaries
