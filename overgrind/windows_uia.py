@@ -128,7 +128,11 @@ class WindowsUIA:
                 if control_type in ("Button", "TabItem", "MenuItem"):
                     record["suggested_mode"] = "invoke"
                     results["feature_candidates"].append(record)
-                elif control_type in ("CheckBox", "RadioButton"):
+                elif control_type == "RadioButton":
+                    # Radio buttons cannot generally be switched off independently.
+                    record["suggested_mode"] = "invoke"
+                    results["feature_candidates"].append(record)
+                elif control_type == "CheckBox":
                     record["kind"] = "boolean"
                     record["suggested_feature_mode"] = "enable"
                     results["controls"].append(record)
