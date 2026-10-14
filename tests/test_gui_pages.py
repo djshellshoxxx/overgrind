@@ -47,6 +47,10 @@ class Helpers(unittest.TestCase):
 
 class TargetAndInspect(GuiCase):
     def test_target_pick_sets_model(self):
+        from overgrind.gui import backend
+        orig = backend.list_windows
+        backend.list_windows = lambda: [dict(x) for x in backend.DEMO_WINDOWS]   # never depend on the host's real windows
+        self.addCleanup(setattr, backend, "list_windows", orig)
         w = MainWindow(); w.show()
         pg = w.pages[0]
         self.assertTrue(pump(lambda: pg.table.rowCount() > 0, 5))

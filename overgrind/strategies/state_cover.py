@@ -79,7 +79,7 @@ class Generator(BaseGenerator):
         txt = (f"about {pow2_text(size)} valid feature states" if size is not None
                else "an uncountable number of valid feature states")
         g = (f"Space too large to enumerate within budget {self.budget} ({txt}): {self.sampled} cases drawn "
-             "uniformly from valid states; NOT a complete-coverage claim, control values sampled.")
+             "uniformly from valid states; no coverage guarantee (NOT a complete-coverage claim), control values sampled.")
         return Coverage(states_total=None, states_visited=0, epochs=0, guarantee=g)
 
     @staticmethod

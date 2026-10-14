@@ -49,7 +49,7 @@ def estimate(project: Project) -> dict[str, Any]:
     elif combos == 1:
         vc = "no value combos"
     else:
-        vc = f"~{big_text(combos)} value combos" if combos >= 10 ** 6 else f"{combos} value combos"
+        vc = f"~{big_text(combos, 3, 10 ** 6)} value combos" if combos >= 10 ** 6 else f"{combos} value combos"
     out: dict[str, Any] = {"valid_states": valid, "cartesian": cartesian, "text": f"{st} x {vc}"}
     if project.run.strategy == "twise":              # additive keys (spec B2 section 4)
         try:

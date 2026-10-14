@@ -77,7 +77,7 @@ class PlanPage(PageBase):
         self.d_cases = QRadioButton("For"); self.sp_cases = QSpinBox(); self.sp_cases.setRange(1, 2**31 - 1); self.sp_cases.setSingleStep(100)
         self.d_first = QRadioButton("Until the first error is found")
         self.d_errs = QRadioButton("Until"); self.sp_errs = QSpinBox(); self.sp_errs.setRange(1, 100000)
-        self.d_pass = QRadioButton("One full pass through all states, then stop")
+        self.d_pass = QRadioButton("One full pass, then stop")
         for r in (self.d_time, self.d_cases, self.d_first, self.d_errs, self.d_pass):
             self.dgroup.addButton(r)
         def line(*ws):
@@ -90,13 +90,13 @@ class PlanPage(PageBase):
         self.body.addWidget(dur)
 
         self.body.addWidget(QLabel("<b>3. Options</b>"))
-        opt = QGroupBox(); of = QFormLayout(opt)
+        opt = QGroupBox(); of = QFormLayout(opt); of.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.t_spin = QSpinBox(); self.t_spin.setRange(2, 6); self.t_spin.setAccessibleName("t for t-wise")
         self.t_label = QLabel("Combine this many features (t):")
         of.addRow(self.t_label, self.t_spin)
-        self.cb_alloff = QCheckBox("Include the case where every feature is off")
+        self.cb_alloff = QCheckBox("Include the all-features-off case")
         of.addRow(self.cb_alloff)
-        self.reset = QComboBox(); [self.reset.addItem(t, k) for k, t in RESET]
+        self.reset = QComboBox(); self.reset.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon); self.reset.setMinimumContentsLength(12); [self.reset.addItem(t, k) for k, t in RESET]
         self.interval = QSpinBox(); self.interval.setRange(1, 1000000); self.interval.setSuffix(" cases")
         rr = QHBoxLayout(); rr.addWidget(self.reset, 1); rr.addWidget(self.interval)
         of.addRow("Put the app back to its defaults:", rr)
@@ -104,11 +104,13 @@ class PlanPage(PageBase):
         self.btn_seed = QPushButton("Random seed")
         sr = QHBoxLayout(); sr.addWidget(self.seed, 1); sr.addWidget(self.btn_seed)
         of.addRow("Seed (same seed = same cases):", sr)
-        self.cb_invalid = QCheckBox("Also try values outside the allowed range (can trigger errors on purpose)")
-        self.cb_restart = QCheckBox("Restart the app automatically after a crash")
+        self.cb_invalid = QCheckBox("Also try out-of-range values")
+        self.cb_restart = QCheckBox("Restart the app after a crash")
         self.cb_shot = QCheckBox("Take a screenshot when something fails")
+        self.cb_invalid.setToolTip("Also tries values outside the allowed range. This can trigger errors on purpose.")
         for cb in (self.cb_invalid, self.cb_restart, self.cb_shot):
             of.addRow(cb)
+        of.addRow(muted("Out-of-range values are tried on purpose and can trigger errors."))
         self.body.addWidget(opt)
         # The estimate and the action buttons live in a footer that stays on screen while the options scroll.
         self.est_text = QLabel(); self.est_text.setWordWrap(True); self.est_text.setTextFormat(Qt.TextFormat.PlainText)

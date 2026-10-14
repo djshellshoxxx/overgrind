@@ -30,7 +30,7 @@ class EvidenceRobustness(unittest.TestCase):
                      history=[Action("control", "field7", "Zq9-secret-Zq9"), Action("control", "vol", 5)])
         e.env["note"] = "typed Zq9-secret-Zq9"
         s.write(e)
-        blob = "".join(p.read_text() for p in self.dir.rglob("*.json"))
+        blob = "".join(p.read_text(encoding="utf-8") for p in self.dir.rglob("*.json"))
         self.assertNotIn("Zq9-secret-Zq9", blob)
         got = s.load("e1")
         self.assertEqual(got.case.values["vol"], 5)
@@ -50,7 +50,7 @@ class EvidenceRobustness(unittest.TestCase):
         red = {"steps": [{"kind": "control", "target": "field7", "value": "Zq9-secret-Zq9"}],
                "values": {"field7": "Zq9-secret-Zq9"}, "message": "bad Zq9-secret-Zq9"}
         path = s.write_reduced(e, red)
-        self.assertNotIn("Zq9-secret-Zq9", Path(path).read_text())
+        self.assertNotIn("Zq9-secret-Zq9", Path(path).read_text(encoding="utf-8"))
 
     def test_replace_retries_on_windows_sharing_violation(self):
         real = os.replace
@@ -64,7 +64,7 @@ class EvidenceRobustness(unittest.TestCase):
         with mock.patch.object(ev.os, "replace", side_effect=flaky):
             ev.atomic_write_text(self.dir / "x.json", "{}")
         self.assertEqual(len(calls), 3)
-        self.assertEqual((self.dir / "x.json").read_text(), "{}")
+        self.assertEqual((self.dir / "x.json").read_text(encoding="utf-8"), "{}")
         self.assertFalse(list(self.dir.glob("*.tmp")))
 
     def test_incident_without_index_entry_is_not_duplicated_after_a_crash(self):

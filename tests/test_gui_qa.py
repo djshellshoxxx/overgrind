@@ -402,6 +402,26 @@ class AtlasRobustness(GuiCase):
         self.assertIn("error", a.accessibleDescription().lower())
 
 
+class WideFontLayout(GuiCase):
+    def test_no_horizontal_overflow_at_min_size_with_wide_fonts(self):
+        from PySide6.QtGui import QFont
+        app = QApplication.instance()
+        old = app.font()
+        try:
+            for fam, pt in (("DejaVu Sans", 12), ("DejaVu Sans Mono", 11), ("Segoe UI", 9)):
+                app.setFont(QFont(fam, pt))
+                w = demo_window(); w.resize(900, 600)
+                for i in range(7):
+                    w.go_to(i); pump(timeout=0.1)
+                    self.assertEqual(w.pages[i].scroll.horizontalScrollBar().maximum(), 0, f"{fam} {pt}: overflow on page {i}")
+                w.close()
+        finally:
+            app.setFont(old)
+
+    def test_window_lister_hides_shell_windows(self):
+        self.assertIn("Progman", backend._SHELL_CLASSES)
+
+
 class PreflightGate(GuiCase):
     def test_failed_preflight_blocks_start_until_name_is_typed(self):
         w = demo_window()

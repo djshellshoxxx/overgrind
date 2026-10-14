@@ -435,6 +435,9 @@ DEMO_WINDOWS = [
 ]
 
 
+_SHELL_CLASSES = frozenset({"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Windows.UI.Core.CoreWindow"})
+
+
 def window_listable(visible: bool, cloaked: bool, owned: bool, toolwindow: bool, title: str, pid: int, own_pid: int) -> bool:
     """Which top-level windows a tester may pick: real, visible, titled, app-level windows of other processes.
     Pure so it can be tested off Windows."""
@@ -476,6 +479,8 @@ def _list_windows_win32() -> list[dict]:  # pragma: no cover - Windows only
     user32.GetWindow.restype = wintypes.HWND
     user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.GetWindowLongW.restype = ctypes.c_long
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.restype = ctypes.c_int
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -529,6 +534,10 @@ def _list_windows_win32() -> list[dict]:  # pragma: no cover - Windows only
             user32.GetWindowTextW(hwnd, buf, n + 1)
             if not window_listable(True, cloaked(hwnd), bool(user32.GetWindow(hwnd, GW_OWNER)),
                                    bool(user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW), buf.value, pid.value, me):
+                return True
+            cls = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, cls, 256)
+            if cls.value in _SHELL_CLASSES:          # desktop ("Program Manager"), taskbar: never a test target
                 return True
             path, arch = proc_info(pid.value)
             out.append({"pid": int(pid.value), "process": os.path.basename(path) or f"PID {pid.value}", "title": buf.value, "path": path, "arch": arch})

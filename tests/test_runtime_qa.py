@@ -269,7 +269,7 @@ class CheckpointDoesNotPersistSensitiveValues(unittest.TestCase):
             c = RunController(p, mock_spec(), d, stop=StopConditions(max_cases=60), checkpoint_interval_s=0.05)
             c.start()
             self.assertTrue(c.join(60))
-            ck = (Path(d) / "checkpoint.json").read_text()
+            ck = (Path(d) / "checkpoint.json").read_text(encoding="utf-8")
             self.assertIn('"generator"', ck)
             self.assertNotIn("field7", ck, strategy)
             self.assertNotIn("XQXQXQXQ", ck, strategy)

@@ -317,9 +317,9 @@ class StateSpace:
         return str(self.size)
 
 
-def big_text(n: int, digits: int = 3) -> str:
+def big_text(n: int, digits: int = 3, plain_below: int = 10 ** 15) -> str:
     """Compact, overflow-proof text for arbitrarily large non-negative integers (never float(n))."""
-    if n < 10 ** 15:
+    if n < plain_below:
         return f"{n:,}"
     lg = math.log10(n)                      # exact enough for display; accepts any size of int
     e = int(lg)

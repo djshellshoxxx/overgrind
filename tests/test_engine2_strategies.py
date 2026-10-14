@@ -1,6 +1,9 @@
 import itertools
 import json
-import resource
+try:
+    import resource          # POSIX only
+except ImportError:          # Windows
+    resource = None
 import tracemalloc
 import unittest
 
@@ -124,7 +127,7 @@ class StateCover(unittest.TestCase):
         it = iter(g)
         for _ in range(200_000):
             next(it)
-        rss0 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        rss0 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource else 0
         tracemalloc.start()
         base = tracemalloc.get_traced_memory()[0]
         for _ in range(100_000):
@@ -134,7 +137,7 @@ class StateCover(unittest.TestCase):
         self.assertLess(grown, 1_000_000)
         for _ in range(1_700_000):
             c = next(it)
-        rss1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        rss1 = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource else 0
         self.assertEqual(c.seq, 1_999_999)
         self.assertLess(rss1 - rss0, 4 * 1024, f"maxrss grew {rss1 - rss0} KB")   # KB on Linux
         cov = g.coverage()
