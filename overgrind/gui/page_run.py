@@ -216,6 +216,7 @@ class RunPage(PageBase):
             self.ring.set_value(frac, f"{frac:.0%}", f"States seen: {cv.states_visited:,} of {cv.states_total:,}")
         else:
             self.ring.set_value(None, "?", f"States seen: {cv.states_visited:,} (total not countable)")
+        self.bar.setVisible(bool(cv.buckets_total))
         if cv.buckets_total:
             self.bar.setRange(0, cv.buckets_total); self.bar.setValue(cv.buckets_visited)
             self.bar.setFormat(f"Value ranges: {cv.buckets_visited:,}/{cv.buckets_total:,}")

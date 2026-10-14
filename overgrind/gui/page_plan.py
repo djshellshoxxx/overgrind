@@ -279,10 +279,10 @@ class PlanPage(PageBase):
         self.prev_table.setRowCount(len(cases))
         for r, c in enumerate(cases):
             st = ", ".join(f"{names.get(k, k)}={v}" + ("" if v == defaults.get(k) else "*") for k, v in c.state.items()) or "-"
-            vals = ", ".join(f"{k}={v}" for k, v in c.values.items()) or "-"
+            vals = ", ".join(f"{k}={round(v, 4) if isinstance(v, float) else v}" for k, v in c.values.items()) or "-"
             for col, t in enumerate((str(c.seq), st, vals)):
                 self.prev_table.setItem(r, col, QTableWidgetItem(t))
-        self.prev_table.setVisible(bool(cases)); self.prev_table.resizeRowsToContents()
+        self.prev_table.setVisible(bool(cases)); self.prev_table.resizeRowsToContents(); self.prev_table.setMinimumHeight(240)
         self.prev_status.setText(f"First {len(cases)} cases for seed {proj.run.seed}. A * marks a state that is not the default." if cases else "The plan produced no cases. Check that at least one feature is switched on in the Features page.")
 
     # ---- preflight

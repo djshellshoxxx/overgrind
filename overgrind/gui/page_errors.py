@@ -25,7 +25,9 @@ STEP_TEXT = {
 
 def step_html(kind: str, target: str, value) -> str:
     fn = STEP_TEXT.get(kind)
-    t, v = html.escape(str(target)), html.escape(str(value))
+    if value is None and kind in ("wait",):
+        return "Wait for the app to settle"
+    t, v = html.escape(str(target)), html.escape("(empty)" if value == "" else str(value))
     return fn(t, v) if fn else f"{html.escape(kind)} {t} {v}"
 
 

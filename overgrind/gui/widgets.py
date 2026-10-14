@@ -51,7 +51,7 @@ class PageBase(QWidget):
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll); self.scroll = scroll
         inner = QWidget(); scroll.setWidget(inner)
         self.body = QVBoxLayout(inner); self.body.setContentsMargins(16, 16, 16, 16); self.body.setSpacing(8)
         self.title_label = QLabel(self.title); self.title_label.setObjectName("PageTitle")

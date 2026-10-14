@@ -111,6 +111,8 @@ def stability_score(selector: Selector, elements: Sequence[ElementInfo] | None =
         base, why = 10, "positional or empty selector"
     if elements is not None:
         r = resolve(selector, elements)
+        if not r.found and r.ambiguous:
+            return max(0, base - 25), why + "; matches several elements (ambiguous)"
         if not r.found:
             return 0, why + "; currently unresolved"
         if r.ambiguous:

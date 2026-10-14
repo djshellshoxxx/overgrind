@@ -63,7 +63,7 @@ def demo_project() -> Project:
              for a in ("cb_alpha", "cb_beta", "cb_gamma", "cb_delta")]
     feats.append(FeatureDef("cmb_mode", "Mode", "multistate", ("Off", "Low", "High"), "Off", els["cmb_mode"].selector, provenance=prov))
     feats.append(FeatureDef("btn_apply", "Apply", "action", (), "", els["btn_apply"].selector, provenance=Provenance("uia", "inferred", "sample")))
-    feats.append(FeatureDef("btn_delete", "Delete all data", "action", (), "", els["btn_delete"].selector, dangerous=True,
+    feats.append(FeatureDef("btn_delete", "Delete all data", "action", (), "", els["btn_delete"].selector, dangerous=True, enabled=False,
                             provenance=Provenance("uia", "inferred", "sample")))
     ctrls = []
     for a, default, fz, scope in (("sld_volume", 50, Domain("integer", 10, 90, 1), ()), ("sld_gain", 1.0, None, ("cb_alpha",)),

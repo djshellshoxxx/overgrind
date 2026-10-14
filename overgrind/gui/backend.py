@@ -127,6 +127,8 @@ def describe_selector(s: Selector) -> str:
         parts.append(f"name '{s.title}'")
     if s.control_type:
         parts.append(s.control_type)
+    if s.class_name:
+        parts.append(f"class {s.class_name}")
     if s.path:
         parts.append("in " + " > ".join(s.path))
     if s.index is not None:
