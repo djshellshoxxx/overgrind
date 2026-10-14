@@ -119,6 +119,17 @@ class FeatureModeTests(unittest.TestCase):
 
 
 class SamplingTests(unittest.TestCase):
+    def test_large_float_range_never_emits_nonfinite_values(self):
+        import math
+        control = ControlSpec.from_dict({
+            "id": "x", "kind": "float", "minimum": -1e308,
+            "maximum": 1e308, "selector": {"auto_id": "x"}
+        })
+        for i in range(100):
+            value = sample_value(control, Random(i))
+            self.assertTrue(math.isfinite(value))
+            self.assertLessEqual(abs(value), 1e308)
+
     def test_bounded_integer_single_point(self):
         control = ControlSpec.from_dict({"id": "x", "kind": "integer",
                                          "minimum": 9, "maximum": 9,
@@ -186,6 +197,29 @@ class RunnerTests(unittest.TestCase):
                              path, samples=2, seed=1, stop_on_failure=True)
             self.assertEqual(counts, {"passed": 0, "failed": 1})
             self.assertEqual(len(path.read_text().splitlines()), 1)
+
+    def test_replay_single_case_preserves_original_index_and_inputs(self):
+        app = application()
+        plan = list(generate_cases(app, samples=3, seed=28))
+        target = plan[10]
+        adapter = FakeAdapter()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "single.jsonl"
+            counts = execute(app, adapter, path, samples=3, seed=28, only_index=10)
+            row = json.loads(path.read_text())
+        self.assertEqual(counts, {"passed": 1, "failed": 0})
+        self.assertEqual(row["index"], 10)
+        self.assertEqual(row["values"], target.values)
+        self.assertEqual(row["pair"], [target.first, target.second])
+        self.assertEqual(len(adapter.actions), 2)
+
+    def test_invalid_replay_index_rejected_without_creating_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "single.jsonl"
+            with self.assertRaises(ValueError):
+                execute(application(), FakeAdapter(), path,
+                        samples=1, seed=1, only_index=99)
+            self.assertFalse(path.exists())
 
     def test_zero_and_negative_samples_are_invalid(self):
         with self.assertRaises(ValueError):
