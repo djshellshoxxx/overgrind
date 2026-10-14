@@ -30,11 +30,14 @@ def sample_value(control: ControlSpec, rng: Random) -> Any:
             return rng.choice(candidates)
         return rng.randint(low, high)
     if kind == "float":
-        midpoint = (low + high) / 2
+        midpoint = low / 2 + high / 2
         candidates = [low, high, midpoint]
         if low <= 0 <= high:
             candidates.append(0.0)
         if rng.random() < 0.3:
             return rng.choice(candidates)
-        return rng.uniform(low, high)
+        # Weighted interpolation avoids overflow in (high - low).
+        t = rng.random()
+        value = (1 - t) * low + t * high
+        return max(low, min(high, value))
     raise ValueError(f"unsupported kind: {kind}")
