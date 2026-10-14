@@ -55,6 +55,7 @@ class ControlSpec:
     options: tuple[str, ...] = field(default_factory=tuple)
     max_length: int | None = None
     alphabet: str = DEFAULT_ALPHABET
+    requires_features: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ControlSpec":
@@ -67,6 +68,11 @@ class ControlSpec:
         options = data.get("options", ())
         max_length = data.get("max_length")
         alphabet = data.get("alphabet", DEFAULT_ALPHABET)
+        requires = data.get("requires_features", [])
+        if (not isinstance(requires, list)
+                or any(not isinstance(item, str) or not item for item in requires)
+                or len(requires) != len(set(requires))):
+            raise ValueError(f"{ident}: requires_features must be a unique list of feature ids")
         if kind in ("integer", "float"):
             valid = lambda x: isinstance(x, (float, int)) and not isinstance(x, bool) and math.isfinite(x)
             if not valid(minimum) or not valid(maximum) or minimum > maximum:
@@ -90,7 +96,7 @@ class ControlSpec:
         elif max_length is not None:
             raise ValueError(f"{ident}: max_length only applies to text")
         return cls(ident, kind, selector, minimum, maximum,
-                   tuple(options), max_length, alphabet)
+                   tuple(options), max_length, alphabet, tuple(requires))
 
 
 @dataclass(frozen=True)
@@ -121,6 +127,10 @@ class AppSpec:
             ids = [item.id for item in items]
             if len(ids) != len(set(ids)):
                 raise ValueError(f"duplicate ids in {label}")
+        feature_ids = {feature.id for feature in features}
+        for control in controls:
+            if not set(control.requires_features).issubset(feature_ids):
+                raise ValueError(f"{control.id}: unknown feature dependency")
         return cls(title, features, controls)
 
     @classmethod
