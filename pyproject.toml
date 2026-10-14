@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "overgrind"
-version = "0.1.0"
-description = "Seeded ordered-feature-pair GUI stress testing"
+version = "0.2.0"
+description = "Continuous standalone Windows GUI feature-state fuzzing"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -13,9 +13,14 @@ dependencies = []
 
 [project.optional-dependencies]
 windows = ["pywinauto>=0.6.8,<0.7"]
+gui = ["PySide6-Essentials>=6.6"]
+build = ["pyinstaller>=6.0"]
 
 [project.scripts]
 overgrind = "overgrind.__main__:main"
+
+[project.gui-scripts]
+overgrind-gui = "overgrind.gui.app:main"
 
 [tool.setuptools.packages.find]
 include = ["overgrind*"]

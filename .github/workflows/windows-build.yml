@@ -1,0 +1,39 @@
+name: Windows build
+
+on:
+  push:
+    branches: ['claude/**', main]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[windows,gui,build]"
+      - name: Unit tests (offscreen Qt)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
+      - name: Windows smoke (fixture app + UIA adapter, interactive desktop)
+        run: python tests/windows_smoke.py
+      - name: Build executables
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name Overgrind --collect-submodules overgrind packaging/gui_entry.py
+          pyinstaller --noconfirm --clean --console --name overgrind-cli --collect-submodules overgrind packaging/cli_entry.py
+      - name: Frozen smoke (no Python on PATH needed)
+        run: |
+          dist\overgrind-cli\overgrind-cli.exe v2 estimate --help
+          dist\overgrind-cli\overgrind-cli.exe plan --config examples/demo.json --samples 1 --limit 2
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\Overgrind, dist\overgrind-cli -DestinationPath Overgrind-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Overgrind-windows-x64
+          path: Overgrind-windows-x64.zip
