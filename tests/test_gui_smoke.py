@@ -85,17 +85,10 @@ class ProjectIO(GuiCase):
 
     def test_import_v1_manifest(self):
         from overgrind.gui import backend
-        d = tempfile.mkdtemp(); p = os.path.join(d, "v1.json")
-        v1 = {"features": [{"name": "A", "selector": {"title": "A"}}, {"name": "B", "selector": {"title": "B"}}],
-              "samples": 2}
-        with open(p, "w") as fh:
-            json.dump(v1, fh)
-        try:
-            proj = backend.migrate_v1(p)
-        except Exception as e:                     # v0.1 layout unknown to this test; just require a clean error
-            self.assertTrue(str(e))
-        else:
-            self.assertGreaterEqual(len(proj.features), 1)
+        here = os.path.dirname(os.path.abspath(__file__))
+        proj = backend.migrate_v1(os.path.join(here, "..", "examples", "demo.json"))
+        self.assertGreaterEqual(len(proj.features), 1)
+        self.assertEqual(proj.features[0].provenance.source, "v1-import")
 
     def test_open_bad_file_is_friendly(self):
         from PySide6.QtWidgets import QMessageBox
@@ -105,7 +98,8 @@ class ProjectIO(GuiCase):
         QMessageBox.warning = staticmethod(lambda *a, **k: shown.append(a[1]))
         try:
             d = tempfile.mkdtemp(); p = os.path.join(d, "bad.ovg.json")
-            open(p, "w").write("{not json")
+            with open(p, "w") as fh:
+                fh.write("{not json")
             self.assertFalse(w.open_path(p))
         finally:
             QMessageBox.warning = orig

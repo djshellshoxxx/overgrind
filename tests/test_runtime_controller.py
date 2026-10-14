@@ -180,7 +180,7 @@ class FailureHandlingTests(unittest.TestCase):
         self.assertIn("no progress", c.stats().stop_reason)
 
     def test_harness_errors_are_not_app_defects(self):
-        c, d = run(spec_kw=dict(harness_rate=0.2, seed=4), stop=StopConditions(max_seconds=1.5), wait=15)
+        c, d = run(spec_kw=dict(harness_rate=0.03, seed=4), stop=StopConditions(max_seconds=1.5), wait=15)
         st = c.stats()
         self.assertGreater(st.harness_errors, 10)
         self.assertGreater(st.cases, 10)

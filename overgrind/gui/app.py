@@ -367,7 +367,8 @@ class MainWindow(QMainWindow):
 
 
 def make_app(argv: list[str] | None = None) -> QApplication:
-    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    if QGuiApplication.instance() is None:
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Overgrind"); app.setOrganizationName("Overgrind")
     app.setStyle("Fusion")
