@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .models import AppSpec, ControlSpec, FeatureSpec
-from .planning import generate_cases
+from .planning import generate_cases, total_cases
 
 
 class GuiAdapter(Protocol):
@@ -26,10 +26,14 @@ def execute(
     seed: int = 1,
     stop_on_failure: bool = False,
     settle_ms: int = 0,
+    only_index: int | None = None,
 ) -> dict[str, int]:
     """Run all planned cases against an adapter and store JSONL evidence."""
     if type(settle_ms) is not int or settle_ms < 0:
         raise ValueError("settle_ms must be a nonnegative integer")
+    count = total_cases(spec, samples)
+    if only_index is not None and (type(only_index) is not int or not 0 <= only_index < count):
+        raise ValueError(f"only_index must be between 0 and {count - 1}")
     feature_index = {feature.id: feature for feature in spec.features}
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -37,6 +41,8 @@ def execute(
     # Refuse to overwrite previous evidence.
     with path.open("x", encoding="utf-8") as stream:
         for case in generate_cases(spec, samples=samples, seed=seed):
+            if only_index is not None and case.index != only_index:
+                continue
             start = time.monotonic()
             status, error = "passed", None
             try:
