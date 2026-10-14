@@ -45,14 +45,18 @@ def execute(
                 continue
             start = time.monotonic()
             status, error = "passed", None
+            applied_controls: list[str] = []
             try:
                 prepare = getattr(adapter, "prepare_case", None)
                 if callable(prepare):
                     prepare(spec.features)
-                for control in spec.controls:
-                    adapter.set_control(control, case.values[control.id])
                 adapter.activate_feature(feature_index[case.first])
                 adapter.activate_feature(feature_index[case.second])
+                active = {case.first, case.second}
+                for control in spec.controls:
+                    if set(control.requires_features).issubset(active):
+                        adapter.set_control(control, case.values[control.id])
+                        applied_controls.append(control.id)
                 if settle_ms:
                     time.sleep(settle_ms / 1000)
                 if not adapter.healthy():
@@ -64,6 +68,7 @@ def execute(
                 "seed": seed,
                 "pair": [case.first, case.second],
                 "values": case.values,
+                "applied_controls": applied_controls,
                 "status": status,
                 "error": error,
                 "duration_ms": round((time.monotonic() - start) * 1000, 3),
