@@ -66,12 +66,17 @@ class W:
         return True
 
     def descendants(self, **crit):
+        # mimic pywinauto 0.6.8 UIAElementInfo.descendants -> build_condition(): no auto_id keyword
+        bad = set(crit) - {"process", "class_name", "title", "control_type", "content_only",
+                           "cache_enable", "depth"}
+        if bad:
+            raise TypeError(f"build_condition() got an unexpected keyword argument {sorted(bad)[0]!r}")
         out = []
         for k in self._kids:
             out.append(k)
             out.extend(k.descendants())
         for key, want in crit.items():
-            attr = {"title": "name", "auto_id": "automation_id"}.get(key, key)
+            attr = {"title": "name"}.get(key, key)
             out = [w for w in out if getattr(w.element_info, attr) == want]
         return out
 
@@ -178,6 +183,11 @@ class UiaLogicTests(unittest.TestCase):
             a.set_control(c, "a+b")
         self.assertEqual(typed, ["^aa{+}b"])
         self.assertEqual(_escape_keys("{x}"), "{{}x{}}")
+
+    def test_qt_dotted_automation_id_suffix_matches(self):
+        a, w = build()
+        w["tg"].element_info.automation_id = "main_window.cb_a"      # Qt < 6.8 path-style AutomationId
+        self.assertIs(a._find(Selector(auto_id="cb_a", control_type="CheckBox")), w["tg"])
 
     def test_self_healing_find_via_title_when_auto_id_changes(self):
         a, w = build()

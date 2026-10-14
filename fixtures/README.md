@@ -14,6 +14,13 @@ end to end that crashes, hangs and modal dialogs are detected, deduplicated and 
 | `btn_apply` | harmless; `btn_delete` is a decoy "dangerous" button (mark the feature `dangerous`) |
 | `btn_crash`, `btn_hang`, `btn_modal` | fault on click (30 ms after the click so the UIA call returns) |
 
+AutomationId exposure: Qt >= 6.8 returns `setAccessibleIdentifier()` text verbatim as the UIA
+AutomationId (the fixture sets it, so `cb_a` etc. work with PySide6 >= 6.8). Older Qt ignores it and
+reports a dotted objectName path (`main_window.cb_a`); `UiaAdapter` accepts that `.cb_a` suffix, and every
+selector in the smoke test also carries the accessible Name (+ control type) as a second lookup tier.
+Qt only builds its UIA tree once a UIA client queries it (no env var needed), so the first query can be
+slow/empty; the smoke test polls. `QT_QPA_PLATFORM=offscreen` has NO UIA tree: never set it for the smoke step.
+
 Deliberate faults (command line, or env `OVERGRIND_BUG="SPEC;SPEC"`):
 
 ```
@@ -27,10 +34,10 @@ Run headless on Linux (no UIA, only to check the app itself): `QT_QPA_PLATFORM=o
 
 ## How CI uses it (Windows runner, interactive desktop)
 
-`pip install pywinauto PySide6-Essentials` then
+`pip install -e ".[windows,gui]"` then
 
 ```
-python -m unittest tests.windows_smoke -v
+python -X utf8 tests/windows_smoke.py      # writes smoke-diag/ (UIA tree, processes, screenshot) on failure
 ```
 
 `tests/windows_smoke.py` is skipped on non-Windows. It launches the app through `UiaAdapter`

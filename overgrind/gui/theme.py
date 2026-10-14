@@ -188,6 +188,7 @@ def qss() -> str:
     QPushButton#Primary { font-weight: 600; padding: 8px 22px; }
     QPushButton#Big { font-size: 13pt; font-weight: 600; padding: 12px 28px; }
     QFrame#Card { border: 1px solid palette(mid); border-radius: 8px; }
+    QFrame#Footer { border-top: 1px solid palette(mid); background: palette(alternate-base); }
     QFrame#Card[selected="true"] { border: 2px solid palette(highlight); }
     QGroupBox { margin-top: 12px; font-weight: 600; }
     QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }

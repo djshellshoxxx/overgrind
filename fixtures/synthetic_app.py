@@ -1,6 +1,8 @@
 """Synthetic PySide6 target for Overgrind end-to-end tests (Windows CI; also runs offscreen).
 
-Exposes standard UIA fields (objectName -> AutomationId, accessibleName -> Name): 4 checkboxes
+Exposes standard UIA fields (accessibleName -> Name; AutomationId from setAccessibleIdentifier on
+Qt >= 6.8, else Qt builds a dotted objectName path such as "main_window.cb_a" - the adapter accepts
+that suffix form and the smoke test falls back to Name): 4 checkboxes
 (cb_a..cb_d, where cb_c/cb_d are mutually exclusive), a 3-state combo (cmb_mode: Off/Low/High),
 two sliders (sld_volume 0..100, sld_gain 0..10), a spinbox (spn_count 0..50), a line edit
 (edt_name, max 20) and buttons that DELIBERATELY crash / hang / pop a modal dialog.
@@ -68,7 +70,13 @@ def do_action(action: str, crash_mode: str = "exit", hwnd: int = 0) -> None:
     if action == "crash":
         if crash_mode == "segv":
             import ctypes
-            ctypes.string_at(0)
+            if sys.platform == "win32":
+                # ctypes turns a real access violation inside a foreign call into a Python OSError
+                # (so string_at(0) would NOT kill us). A non-continuable exception with a code that
+                # ctypes does not translate is unhandled -> process dies with that NTSTATUS.
+                ctypes.windll.kernel32.RaiseException(0xC0000409, 1, 0, None)
+            else:
+                ctypes.string_at(0)
         os._exit(3)
     elif action == "hang":
         while True:          # busy loop on the GUI thread => not responding
@@ -76,7 +84,11 @@ def do_action(action: str, crash_mode: str = "exit", hwnd: int = 0) -> None:
     elif action == "modal":
         if sys.platform == "win32":
             import ctypes
-            ctypes.windll.user32.MessageBoxW(hwnd, "Synthetic fixture error", "Overgrind fixture", 0x10)
+            from ctypes import wintypes
+            mb = ctypes.WinDLL("user32").MessageBoxW
+            mb.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT]
+            mb.restype = ctypes.c_int
+            mb(hwnd or None, "Synthetic fixture error", "Overgrind fixture", 0x10)   # MB_ICONERROR, owner => modal
         else:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(None, "Overgrind fixture", "Synthetic fixture error")
@@ -114,7 +126,9 @@ def main(argv: list[str] | None = None) -> int:
     def name(w: Any, oid: str, label: str) -> Any:
         w.setObjectName(oid)
         w.setAccessibleName(label)
-        if hasattr(w, "setAccessibleIdentifier"):      # Qt >= 6.8 maps this to UIA AutomationId
+        # Qt >= 6.8: QAccessible::Identifier text is returned verbatim as UIA AutomationId
+        # (qtbase accessibleId()). Older Qt ignores it and derives "<parent objectNames>.<objectName>".
+        if hasattr(w, "setAccessibleIdentifier"):
             w.setAccessibleIdentifier(oid)
         return w
 

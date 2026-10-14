@@ -4,10 +4,10 @@ from __future__ import annotations
 import math
 import re
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
-    QFrame, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QFrame, QLabel, QScrollArea, QSizePolicy, QToolTip, QVBoxLayout, QWidget,
 )
 
 from ..types import Coverage
@@ -51,7 +51,11 @@ class PageBase(QWidget):
         outer = QVBoxLayout(self); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(scroll); self.scroll = scroll
+        outer.addWidget(scroll, 1); self.scroll = scroll
+        # Optional footer that stays visible while the body scrolls (e.g. Plan's estimate and its action buttons).
+        self.footer = QFrame(); self.footer.setObjectName("Footer"); self.footer.setVisible(False)
+        self.footer_layout = QVBoxLayout(self.footer); self.footer_layout.setContentsMargins(16, 6, 16, 6); self.footer_layout.setSpacing(4)
+        outer.addWidget(self.footer)
         inner = QWidget(); scroll.setWidget(inner)
         self.body = QVBoxLayout(inner); self.body.setContentsMargins(16, 16, 16, 16); self.body.setSpacing(8)
         self.title_label = QLabel(self.title); self.title_label.setObjectName("PageTitle")
@@ -60,6 +64,10 @@ class PageBase(QWidget):
         self.hint_label.setTextFormat(Qt.TextFormat.RichText)
         self.body.addWidget(self.title_label); self.body.addWidget(self.hint_label)
         self.set_hint(self.hint)
+
+    def show_below(self, widget: QWidget) -> None:
+        """Scroll the body so `widget` (e.g. fresh results) is in view."""
+        QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(widget, 0, 40))
 
     def set_hint(self, text: str) -> None:
         self.hint_label.setText(f"<b>What to do now:</b> {text}")
@@ -131,7 +139,7 @@ class Ring(QWidget):
         self._frac: float | None = 0.0
         self._center = "0%"
         self._caption = ""
-        self.setMinimumSize(110, 120)
+        self.setMinimumSize(150, 170)
 
     def set_value(self, frac: float | None, center: str, caption: str) -> None:
         self._frac, self._center, self._caption = frac, center, caption
@@ -139,11 +147,11 @@ class Ring(QWidget):
         self.update()
 
     def sizeHint(self) -> QSize:
-        return QSize(130, 140)
+        return QSize(170, 190)
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        side = min(self.width(), self.height() - 30) - 12
+        side = min(self.width(), self.height() - 56) - 12
         rect = QRectF((self.width() - side) / 2, 6, side, side)
         pal = self.palette()
         pen = QPen(pal.mid().color(), 9); pen.setCapStyle(Qt.PenCapStyle.FlatCap)
@@ -155,83 +163,190 @@ class Ring(QWidget):
         f = self.font(); f.setBold(True); f.setPointSizeF(f.pointSizeF() * 1.3); p.setFont(f)
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._center)
         f.setBold(False); f.setPointSizeF(f.pointSizeF() / 1.3); p.setFont(f)
-        cap = QRectF(0, rect.bottom() + 6, self.width(), 24)
+        cap = QRectF(2, rect.bottom() + 6, self.width() - 4, 46)
         p.drawText(cap, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, self._caption)
 
 
 # ------------------------------------------------------------------ Feature-State Atlas
 class Atlas(QWidget):
-    """Heat-map grid: one row per feature, one cell per state. Each cell prints its count (never colour alone)."""
+    """Heat-map grid: one row per feature, one cell per state. Each cell prints its count (never colour alone).
+    Cells wrap onto extra lines when a feature has many states, so nothing is ever clipped."""
     ROW_H = 28
+    GAP = 6
     LABEL_MAX = 200
+    LEGEND_H = 22
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._rows: list[tuple[str, str, tuple[str, ...]]] = []
         self._visits: dict[tuple[str, str], int] = {}
+        self._errored: set[tuple[str, str]] = set()
         self._max = 0
+        self.sampled = True
         self.setMouseTracking(True)
         self.setMinimumHeight(80)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        sp = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred); sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setAccessibleName("Feature-State Atlas")
+        self._describe()
 
+    # ---- data
     def set_features(self, rows) -> None:
         """rows: list of (feature id, display name, states)"""
         self._rows = [(a, b, tuple(c)) for a, b, c in rows]
-        self.updateGeometry(); self.update()
+        self.updateGeometry(); self.update(); self._describe()
 
     def set_visits(self, visits: dict[tuple[str, str], int]) -> None:
         self._visits = visits
         self._max = max(visits.values(), default=0)
+        self.update(); self._describe()
+
+    def set_errored(self, cells) -> None:
+        self._errored = set(cells)
+        self.update(); self._describe()
+
+    def errored(self) -> set[tuple[str, str]]:
+        return set(self._errored)
+
+    def _describe(self) -> None:
         total = sum(len(s) for _, _, s in self._rows)
-        seen = sum(1 for k, v in visits.items() if v > 0)
-        self.setAccessibleName("Feature-State Atlas")
-        self.setAccessibleDescription(f"{seen} of {total} feature states seen in the sampled actions.")
-        self.update()
+        seen = sum(1 for k, v in self._visits.items() if v > 0)
+        how = "in the sampled actions" if self.sampled else "so far"
+        text = f"{seen} of {total} feature states seen {how}."
+        if self._errored:
+            text += f" An error happened in {len(self._errored)} of them."
+        self.setAccessibleDescription(text)
+
+    # ---- geometry
+    def _label_w(self) -> int:
+        fm = QFontMetrics(self.font())
+        return min(self.LABEL_MAX, max([fm.horizontalAdvance(n) for _, n, _ in self._rows] + [60]) + 16)
+
+    def _cell_w(self) -> int:
+        fm = QFontMetrics(self.font())
+        longest = max([fm.horizontalAdvance(f"{st}  {max(self._max, 99)}") for _, _, s in self._rows for st in s] + [20])
+        return max(44, min(150, longest + 16))
+
+    def _per_line(self, width: int) -> int:
+        return max(1, (width - self._label_w() - 8) // self._cell_w())
+
+    def _lines(self, n_states: int, width: int) -> int:
+        return max(1, -(-n_states // self._per_line(width)))
+
+    def heightForWidth(self, w: int) -> int:
+        per = self._per_line(w)
+        body = sum(max(1, -(-len(s) // per)) * self.ROW_H + self.GAP for _, _, s in self._rows)
+        return 8 + max(body, self.ROW_H) + self.LEGEND_H
+
+    def hasHeightForWidth(self) -> bool:
+        return True
 
     def sizeHint(self) -> QSize:
-        return QSize(520, 30 + self.ROW_H * max(1, len(self._rows)))
+        return QSize(520, self.heightForWidth(520))
 
     def minimumSizeHint(self) -> QSize:
-        return QSize(300, 60)
+        return QSize(260, 60)
 
-    def _geometry(self):
-        fm = QFontMetrics(self.font())
-        label_w = min(self.LABEL_MAX, max([fm.horizontalAdvance(n) for _, n, _ in self._rows] + [60]) + 16)
-        max_states = max([len(s) for _, _, s in self._rows] + [1])
-        cell_w = max(34, min(96, (self.width() - label_w - 8) // max_states))
-        return label_w, cell_w
+    def _cells(self):
+        """Yield (fid, state, QRectF) for every cell at the current width."""
+        label_w, cell_w, per = self._label_w(), self._cell_w(), self._per_line(self.width())
+        y = 4
+        for fid, _name, states in self._rows:
+            for k, st in enumerate(states):
+                line, col = divmod(k, per)
+                yield fid, st, QRectF(label_w + col * cell_w + 1, y + line * self.ROW_H, cell_w - 2, self.ROW_H - 4)
+            y += self._lines(len(states), self.width()) * self.ROW_H + self.GAP
 
-    def paintEvent(self, _e) -> None:
+    def cell_at(self, pos):
+        for fid, st, r in self._cells():
+            if r.contains(float(pos.x()), float(pos.y())):
+                return fid, st
+        return None
+
+    def event(self, e) -> bool:
+        if e.type() == QEvent.Type.ToolTip:
+            hit = self.cell_at(e.pos())
+            if hit:
+                n = self._visits.get(hit, 0)
+                name = next((nm for fid, nm, _ in self._rows if fid == hit[0]), hit[0])
+                tip = f"{name} = {hit[1]}: seen {n:,} time(s)" + (" (sampled)" if self.sampled else "")
+                if hit in self._errored:
+                    tip += ". An error happened in this state."
+                QToolTip.showText(e.globalPos(), tip, self)
+            else:
+                QToolTip.hideText()
+            return True
+        return super().event(e)
+
+    # ---- painting
+    def paintEvent(self, ev) -> None:
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
         pal = self.palette()
         if not self._rows:
             p.setPen(pal.placeholderText().color())
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, "Add features to see which states have been visited.")
             return
-        label_w, cell_w = self._geometry()
+        label_w = self._label_w()
         fm = QFontMetrics(self.font())
+        clip = ev.rect()
         y = 4
+        bad = theme.sem("fail")
         for fid, name, states in self._rows:
-            p.setPen(pal.windowText().color())
-            p.drawText(QRectF(0, y, label_w - 8, self.ROW_H - 4), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                       fm.elidedText(name, Qt.TextElideMode.ElideRight, int(label_w - 12)))
-            x = label_w
-            for st in states:
-                n = self._visits.get((fid, st), 0)
-                frac = math.log1p(n) / math.log1p(self._max) if self._max else 0.0
-                bg = theme.heat_color(frac if n else 0.0)
-                rect = QRectF(x + 1, y, cell_w - 2, self.ROW_H - 4)
-                p.setPen(QPen(pal.mid().color(), 1, Qt.PenStyle.SolidLine if n else Qt.PenStyle.DashLine))
-                p.setBrush(bg); p.drawRoundedRect(rect, 4, 4)
-                p.setPen(theme.text_on(bg))
-                label = fm.elidedText(f"{st}  {n}", Qt.TextElideMode.ElideRight, int(cell_w - 8))
-                p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
-                x += cell_w
-            y += self.ROW_H
+            h = self._lines(len(states), self.width()) * self.ROW_H
+            if y + h >= clip.top() and y <= clip.bottom():           # only paint rows that are exposed (1,000 features stay quick)
+                p.setPen(pal.windowText().color())
+                p.drawText(QRectF(0, y, label_w - 8, self.ROW_H - 4), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                           fm.elidedText(name, Qt.TextElideMode.ElideRight, int(label_w - 12)))
+                per, cell_w = self._per_line(self.width()), self._cell_w()
+                for k, st in enumerate(states):
+                    line, col = divmod(k, per)
+                    n = self._visits.get((fid, st), 0)
+                    frac = math.log1p(n) / math.log1p(self._max) if self._max else 0.0
+                    bg = theme.heat_color(frac if n else 0.0)
+                    rect = QRectF(label_w + col * cell_w + 1, y + line * self.ROW_H, cell_w - 2, self.ROW_H - 4)
+                    err = (fid, st) in self._errored
+                    pen = QPen(bad, 2.5) if err else QPen(pal.mid().color(), 1, Qt.PenStyle.SolidLine if n else Qt.PenStyle.DashLine)
+                    p.setPen(pen); p.setBrush(bg); p.drawRoundedRect(rect, 4, 4)
+                    p.setPen(theme.text_on(bg))
+                    label = fm.elidedText(f"{st}  {n}" + (" !" if err else ""), Qt.TextElideMode.ElideRight, int(cell_w - 8))
+                    p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+            y += h + self.GAP
         p.setPen(pal.placeholderText().color())
-        p.drawText(QRectF(label_w, y, self.width() - label_w, 20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   "Cell = state name and how often it was seen (sampled). Dashed = not seen yet.")
+        legend = ("Each cell: state name and how often it was seen" + (" (counted from the recent steps, so it can lag behind)" if self.sampled else "")
+                  + ". Dashed = not seen yet. Red outline and ! = an error happened in that state.")
+        p.drawText(QRectF(label_w, y, max(10, self.width() - label_w), self.LEGEND_H), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   fm.elidedText(legend, Qt.TextElideMode.ElideRight, max(10, self.width() - label_w)))
+
+
+class ElidedLabel(QLabel):
+    """One-line label that never forces its window wider: long text is cut with an ellipsis (full text in the tooltip)."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._full = " ".join(str(text).split())
+        self.setToolTip(self._full if len(self._full) > 20 else "")
+        self._fit()
+
+    def text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._fit()
+
+    def _fit(self) -> None:
+        fm = QFontMetrics(self.font())
+        QLabel.setText(self, fm.elidedText(self._full, Qt.TextElideMode.ElideRight, max(20, self.width() - 4)))
+
+    def sizeHint(self) -> QSize:
+        return QSize(120, super().sizeHint().height())
 
 
 def fit_table(view, rows: int, min_rows: int = 3, max_rows: int = 8) -> None:

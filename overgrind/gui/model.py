@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import hashlib
+import time
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
@@ -11,6 +13,7 @@ from ..types import (
 )
 
 _MAX_UNDO = 200
+_MERGE_WINDOW_S = 1.5      # consecutive edits with the same merge key inside this window are one undo step
 
 
 def empty_project(name: str = "Untitled project") -> Project:
@@ -21,16 +24,22 @@ class ProjectModel(QObject):
     changed = Signal()            # any project edit / load
     dirtyChanged = Signal(bool)
     pathChanged = Signal(str)
+    preflightChanged = Signal()
 
     def __init__(self, project: Project | None = None, parent=None):
         super().__init__(parent)
         self._project = project or empty_project()
         self._path = ""
+        self._saved: Project = self._project      # the project as last saved/loaded; dirty == differs from it
+        self._force_dirty = False                  # e.g. an imported v0.1 manifest that has no file yet
         self._dirty = False
         self._undo: list[tuple[str, Project]] = []
         self._redo: list[tuple[str, Project]] = []
+        self._merge: tuple[str, float, int] | None = None   # (key, time, undo depth right after that edit)
         self.adapter_spec = None      # AdapterSpec used for runs / scanning (None -> real UIA)
         self.demo = False
+        self.preflight: dict | None = None   # last Trust Ledger: {"fingerprint": str, "rows": [...]}
+        self._fp_cache: tuple[int, str] = (0, "")
 
     # ---- read
     @property
@@ -64,15 +73,22 @@ class ProjectModel(QObject):
         return cand
 
     # ---- write (all edits go through here)
-    def edit(self, label: str, fn: Callable[[Project], Project]) -> None:
+    def edit(self, label: str, fn: Callable[[Project], Project], merge: str | None = None) -> None:
+        """Apply one edit. `merge` lets rapid consecutive edits of one field (typing in a box) share an undo step."""
         new = fn(self._project)
         if new == self._project:
             return
-        self._undo.append((label, self._project))
-        del self._undo[:-_MAX_UNDO]
+        now = time.monotonic()
+        m = self._merge
+        if merge and m and m[0] == merge and now - m[1] < _MERGE_WINDOW_S and m[2] == len(self._undo) and self._undo:
+            pass                                    # keep the older "before" snapshot: one step covers the whole burst
+        else:
+            self._undo.append((label, self._project))
+            del self._undo[:-_MAX_UNDO]
+        self._merge = (merge, now, len(self._undo)) if merge else None
         self._redo.clear()
         self._project = new
-        self._set_dirty(True)
+        self._refresh_dirty()
         self.changed.emit()
 
     def can_undo(self) -> bool:
@@ -90,7 +106,8 @@ class ProjectModel(QObject):
         label, prev = self._undo.pop()
         self._redo.append((label, self._project))
         self._project = prev
-        self._set_dirty(True)
+        self._merge = None
+        self._refresh_dirty()
         self.changed.emit()
 
     def redo(self) -> None:
@@ -99,21 +116,43 @@ class ProjectModel(QObject):
         label, nxt = self._redo.pop()
         self._undo.append((label, self._project))
         self._project = nxt
-        self._set_dirty(True)
+        self._merge = None
+        self._refresh_dirty()
         self.changed.emit()
 
     def load_project(self, project: Project, path: str = "", dirty: bool = False) -> None:
         self._project = project
-        self._undo.clear(); self._redo.clear()
+        self._saved = project
+        self._force_dirty = dirty
+        self._undo.clear(); self._redo.clear(); self._merge = None
+        self.preflight = None
+        self.preflightChanged.emit()
         self._path = path
         self.pathChanged.emit(path)
-        self._set_dirty(dirty)
+        self._refresh_dirty()
         self.changed.emit()
 
     def mark_saved(self, path: str) -> None:
         self._path = path
+        self._saved = self._project
+        self._force_dirty = False
+        self._merge = None
         self.pathChanged.emit(path)
-        self._set_dirty(False)
+        self._refresh_dirty()
+
+    def set_preflight(self, rows: list[dict], fingerprint: str) -> None:
+        self.preflight = {"fingerprint": fingerprint, "rows": rows}
+        self.preflightChanged.emit()
+
+    def fingerprint(self) -> str:
+        """Identity of the project's content (used to know whether a preflight result is still current)."""
+        key = id(self._project)
+        if self._fp_cache[0] != key:
+            self._fp_cache = (key, hashlib.sha1(repr(self._project).encode("utf-8", "replace")).hexdigest())
+        return self._fp_cache[1]
+
+    def _refresh_dirty(self) -> None:
+        self._set_dirty(self._force_dirty or self._project != self._saved)
 
     def _set_dirty(self, v: bool) -> None:
         if v != self._dirty:
@@ -122,7 +161,7 @@ class ProjectModel(QObject):
 
     # ---- typed helpers
     def rename(self, name: str) -> None:
-        self.edit("Rename project", lambda p: dc.replace(p, name=name))
+        self.edit("Rename project", lambda p: dc.replace(p, name=name), merge="rename")
 
     def set_target(self, target: TargetRef) -> None:
         self.edit("Change target", lambda p: dc.replace(p, target=target))
@@ -133,7 +172,7 @@ class ProjectModel(QObject):
     def update_feature(self, fid: str, **kw) -> None:
         def fn(p: Project) -> Project:
             return dc.replace(p, features=tuple(dc.replace(f, **kw) if f.id == fid else f for f in p.features))
-        self.edit("Edit feature", fn)
+        self.edit("Edit feature", fn, merge=f"feature:{fid}:{','.join(sorted(kw))}")
 
     def remove_feature(self, fid: str) -> None:
         def fn(p: Project) -> Project:
@@ -148,7 +187,7 @@ class ProjectModel(QObject):
     def update_control(self, cid: str, **kw) -> None:
         def fn(p: Project) -> Project:
             return dc.replace(p, controls=tuple(dc.replace(c, **kw) if c.id == cid else c for c in p.controls))
-        self.edit("Edit control", fn)
+        self.edit("Edit control", fn, merge=f"control:{cid}:{','.join(sorted(kw))}")
 
     def remove_control(self, cid: str) -> None:
         self.edit("Remove control", lambda p: dc.replace(p, controls=tuple(c for c in p.controls if c.id != cid)))
@@ -162,7 +201,7 @@ class ProjectModel(QObject):
         self.edit("Remove rule", fn)
 
     def set_run(self, **kw) -> None:
-        self.edit("Change plan", lambda p: dc.replace(p, run=dc.replace(p.run, **kw)))
+        self.edit("Change plan", lambda p: dc.replace(p, run=dc.replace(p.run, **kw)), merge="run:" + ",".join(sorted(kw)))
 
     def reset_run(self) -> None:
         self.edit("Reset plan to defaults", lambda p: dc.replace(p, run=RunConfig()))
@@ -175,7 +214,7 @@ class ProjectModel(QObject):
             else:
                 opts[key] = value
             return dc.replace(p, run=dc.replace(p.run, strategy_options=opts))
-        self.edit("Change plan", fn)
+        self.edit("Change plan", fn, merge=f"opt:{key}")
 
     def set_stop(self, stop: StopConditions) -> None:
         """Stop conditions live in RunConfig.strategy_options['stop'] so they are saved with the project."""

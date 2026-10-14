@@ -7,30 +7,55 @@ on:
 
 jobs:
   windows:
+    # windows-latest is Server 2025 (moving image label); pin if reproducibility matters.
     runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'            # same as `python -X utf8`: no cp1252 console-encoding surprises
+      PYTHONIOENCODING: utf-8
+      SMOKE_DIAG_DIR: smoke-diag
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[windows,gui,build]"
+        run: python -m pip install --upgrade pip; python -m pip install -e ".[windows,gui,build]"
+      - name: Desktop probe
+        run: |
+          python -c "import ctypes,os; s=ctypes.c_ulong(); ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(s)); u=ctypes.windll.user32; print('session', s.value, 'screen', u.GetSystemMetrics(0), 'x', u.GetSystemMetrics(1))"
       - name: Unit tests (offscreen Qt)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest discover -s tests -v
+        run: python -X utf8 -m unittest discover -s tests -v
       - name: Windows smoke (fixture app + UIA adapter, interactive desktop)
-        run: python tests/windows_smoke.py
+        # QT_QPA_PLATFORM must NOT be offscreen here: the fixture needs a real window for UIA.
+        timeout-minutes: 12
+        run: python -X utf8 tests/windows_smoke.py
+      - name: Upload smoke diagnostics
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-diagnostics
+          path: smoke-diag/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Build executables
-        run: |
-          pyinstaller --noconfirm --clean --windowed --name Overgrind --collect-submodules overgrind packaging/gui_entry.py
-          pyinstaller --noconfirm --clean --console --name overgrind-cli --collect-submodules overgrind packaging/cli_entry.py
+        run: pyinstaller --noconfirm --clean packaging/overgrind.spec
       - name: Frozen smoke (no Python on PATH needed)
         run: |
-          dist\overgrind-cli\overgrind-cli.exe v2 estimate --help
-          dist\overgrind-cli\overgrind-cli.exe plan --config examples/demo.json --samples 1 --limit 2
+          .\dist\overgrind-cli\overgrind-cli.exe v2 estimate --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\dist\overgrind-cli\overgrind-cli.exe plan --config examples/demo.json --samples 1 --limit 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # the worker entry and string-imported adapters must resolve inside the frozen app
+          .\dist\overgrind-cli\overgrind-cli.exe --help
       - name: Package
-        shell: pwsh
         run: |
           Compress-Archive -Path dist\Overgrind, dist\overgrind-cli -DestinationPath Overgrind-windows-x64.zip
       - uses: actions/upload-artifact@v4

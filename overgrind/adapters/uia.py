@@ -69,6 +69,7 @@ class UiaAdapter:
         self.backend = backend
         self._target: TargetRef | None = None
         self._pid: int | None = None
+        self._root_pid: int | None = None     # launched process (may differ from _pid for launcher shims)
         self._win: Any = None
         self._cache: dict[Selector, Any] = {}
         self._elements: list[ElementInfo] = []
@@ -83,18 +84,25 @@ class UiaAdapter:
         self._require_windows()
         if self._pid and self._target == target and procwatch.is_alive(self._pid) and self._win is not None:
             return
+        # DPI awareness must be set BEFORE pywinauto/comtypes read any geometry, otherwise UIA
+        # rectangles and screenshots are virtualised (wrong) on scaled displays. COM itself is
+        # initialised by pywinauto's import (MTA via pythoncom; comtypes follows sys.coinit_flags)
+        # on the worker's main thread, which is the only thread that calls into it.
+        procwatch.set_dpi_aware()
         try:
-            from pywinauto import Application, Desktop
+            from pywinauto import Desktop
         except ImportError as exc:
             raise HarnessError("pywinauto is not installed (pip install overgrind[windows])") from exc
         self._target, self._cache = target, {}
         try:
             if target.kind == "exe" and target.exe_path:
-                cmd = subprocess.list2cmdline([target.exe_path, *target.args])
-                app = Application(backend=self.backend).start(cmd, timeout=self.launch_timeout_s)
-                self._pid = int(app.process)
+                # Own launcher (not pywinauto's Application.start): new process group, no inherited
+                # handles, kill-on-close Job Object; see procwatch.launch. The process id is all
+                # pywinauto needs afterwards (Desktop(...).windows(process=pid)).
+                self._pid = procwatch.launch([target.exe_path, *target.args])
+                self._root_pid = self._pid
             elif target.pid:
-                self._pid = int(target.pid)
+                self._pid = self._root_pid = int(target.pid)
             else:
                 rx = target.title_regex or target.process_name
                 if not rx:
@@ -140,6 +148,14 @@ class UiaAdapter:
                 raise HarnessError(f"target process {self._pid} exited during launch")
             try:
                 wins = Desktop(backend=self.backend).windows(process=self._pid)
+                if not wins and self._root_pid == self._pid:
+                    # Launcher shims (venv python.exe, Electron, wrappers) own no window themselves;
+                    # adopt the first descendant process that does and treat it as the target pid.
+                    for child in procwatch.descendant_pids(self._pid):
+                        wins = Desktop(backend=self.backend).windows(process=child)
+                        if wins:
+                            self._pid = child
+                            break
             except Exception:
                 wins = []
             wins = [w for w in wins if _attr(w, "is_visible", True)]
@@ -152,10 +168,12 @@ class UiaAdapter:
         raise HarnessError(f"no window for pid {self._pid} within {self.launch_timeout_s:g}s")
 
     def detach(self, kill: bool = False) -> None:
-        pid = self._pid
-        if kill and pid:
-            procwatch.kill_tree(pid)
-        self._win, self._cache, self._pid = None, {}, None
+        pid, root = self._pid, self._root_pid or self._pid
+        if kill and root:
+            procwatch.kill_tree(root)
+        elif root:
+            procwatch.release_job(root)       # leave the target running even if we die later
+        self._win, self._cache, self._pid, self._root_pid = None, {}, None, None
         self._elements, self._wrappers = [], []
 
     def pid(self) -> int | None:
@@ -182,7 +200,8 @@ class UiaAdapter:
         w = self._cache.get(sel)
         if w is not None:
             try:
-                if _attr(w, "is_visible", True) is not None and _attr(_info(w), "process_id", self._pid) == self._pid:
+                # direct (non-swallowing) read: raises if the UIA element went stale
+                if int(w.element_info.process_id) == self._pid:
                     return w
             except Exception:
                 pass
@@ -193,11 +212,20 @@ class UiaAdapter:
         return w
 
     def _descendants(self, **crit: Any) -> list[Any]:
+        """Descendants matching title/control_type/class_name (server-side UIA conditions) and
+        auto_id (client-side: pywinauto 0.6.8's UIA descendants() has NO auto_id keyword and raises
+        TypeError for it)."""
         crit = {k: v for k, v in crit.items() if v not in ("", None)}
+        auto_id = crit.pop("auto_id", None)
         try:
-            return list(self._win.descendants(**crit))
+            hits = list(self._win.descendants(**crit))
         except Exception as exc:
             raise HarnessError(f"UI Automation query failed: {type(exc).__name__}: {exc}") from exc
+        if auto_id is not None:
+            # Qt < 6.8 reports a dotted path ("main_window.cb_a") as AutomationId: accept the suffix.
+            hits = [h for h in hits
+                    if (lambda a: a == auto_id or a.endswith("." + auto_id))(str(_attr(_info(h), "automation_id", "")))]
+        return hits
 
     def _find_fresh(self, sel: Selector) -> Any:
         tiers = []
@@ -295,7 +323,7 @@ class UiaAdapter:
                 opts: tuple[str, ...] = ()
                 if self.read_combo_options:
                     try:
-                        opts = tuple(str(t) for t in w.item_texts())
+                        opts = tuple(str(t) for t in w.texts())   # UIA ComboBoxWrapper has texts(), not item_texts()
                     except Exception:
                         opts = ()
                 _ = state  # state was read: pattern is live
@@ -559,10 +587,8 @@ class UiaAdapter:
         dialogs = procwatch.modal_dialogs(pid, hwnd)
         if dialogs:
             return Health("modal", f"modal dialog: {dialogs[0][1] or '(untitled)'}")
-        if hwnd and sys.platform == "win32":
-            import ctypes
-            if not ctypes.windll.user32.IsWindow(hwnd):
-                return Health("missing", "main window no longer exists")
+        if hwnd and not procwatch.window_exists(hwnd):
+            return Health("missing", "main window no longer exists")
         return Health("ok")
 
     def screenshot(self, path: str) -> bool:

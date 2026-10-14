@@ -21,6 +21,14 @@ from ..types import (
 )
 
 
+if False:  # pragma: no cover - never runs; lets PyInstaller's static analysis see modules imported by name below
+    from .. import (constraints, controller, diffrun, domain, evidence, infer, planning, preflight, project, reduce,  # noqa: F401
+                    scheduler, states, watchdog, worker)
+    from ..adapters import mock as _a_mock, procwatch as _a_procwatch, resolve as _a_resolve, uia as _a_uia  # noqa: F401
+    from ..strategies import (adaptive as _s_adaptive, boundary as _s_boundary, chaos as _s_chaos,  # noqa: F401
+                              ordered_pairs as _s_ordered, state_cover as _s_state, twise as _s_twise)
+
+
 class BackendMissing(RuntimeError):
     """A backend module/function is not available (yet)."""
 
@@ -427,54 +435,108 @@ DEMO_WINDOWS = [
 ]
 
 
+def window_listable(visible: bool, cloaked: bool, owned: bool, toolwindow: bool, title: str, pid: int, own_pid: int) -> bool:
+    """Which top-level windows a tester may pick: real, visible, titled, app-level windows of other processes.
+    Pure so it can be tested off Windows."""
+    return bool(visible and not cloaked and not owned and not toolwindow and (title or "").strip() and pid and pid != own_pid)
+
+
 def list_windows() -> list[dict]:
-    """Visible top-level windows. Windows: ctypes EnumWindows. Elsewhere: a demo list."""
+    """Visible top-level windows. Windows: ctypes EnumWindows (raises OSError if enumeration fails: a list of
+    pretend windows would be worse than an honest error). Elsewhere: a demo list."""
     if sys.platform != "win32":
         return [dict(w) for w in DEMO_WINDOWS]
-    try:
-        return _list_windows_win32()
-    except Exception:
-        return [dict(w) for w in DEMO_WINDOWS]
+    return _list_windows_win32()
 
 
 def _list_windows_win32() -> list[dict]:  # pragma: no cover - Windows only
     import ctypes
     from ctypes import wintypes
-    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
-    out: list[dict] = []
+    # Every function is declared: ctypes otherwise passes/returns C int, which truncates 64-bit HWND/HANDLE values.
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    try:
+        dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+        dwmapi.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+        dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
+    except (OSError, AttributeError):
+        dwmapi = None
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [enum_proc, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetWindow.restype = wintypes.HWND
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.IsWow64Process.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    kernel32.IsWow64Process.restype = wintypes.BOOL
+    PROCESS_QUERY_LIMITED_INFORMATION, GW_OWNER, GWL_EXSTYLE, WS_EX_TOOLWINDOW, DWMWA_CLOAKED = 0x1000, 4, -20, 0x80, 14
     me = os.getpid()
-    PROC_QUERY = 0x1000
+    out: list[dict] = []
+    procs: dict[int, tuple[str, str]] = {}
 
     def proc_info(pid: int) -> tuple[str, str]:
-        h = kernel32.OpenProcess(PROC_QUERY, False, pid)
-        if not h:
-            return "", "unknown"
-        try:
-            buf = ctypes.create_unicode_buffer(1024)
-            size = wintypes.DWORD(1024)
-            path = buf.value if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)) else ""
-            wow = wintypes.BOOL(False)
-            arch = "unknown"
-            if kernel32.IsWow64Process(h, ctypes.byref(wow)):
-                arch = "32-bit" if wow.value else "64-bit"
-            return path, arch
-        finally:
-            kernel32.CloseHandle(h)
+        if pid in procs:
+            return procs[pid]
+        path, arch = "", "unknown"
+        h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if h:
+            try:
+                buf = ctypes.create_unicode_buffer(32768)          # long-path safe
+                size = wintypes.DWORD(len(buf))
+                if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                    path = buf.value
+                wow = wintypes.BOOL(False)
+                if kernel32.IsWow64Process(h, ctypes.byref(wow)):
+                    arch = "32-bit" if wow.value else "64-bit"
+            finally:
+                kernel32.CloseHandle(h)
+        if path:
+            exact = pe_arch(path)
+            if exact != "unknown":
+                arch = exact
+        procs[pid] = (path, arch)
+        return procs[pid]
 
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cloaked(hwnd) -> bool:
+        if dwmapi is None:
+            return False
+        v = wintypes.DWORD(0)
+        return dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(v), ctypes.sizeof(v)) == 0 and v.value != 0
+
     def cb(hwnd, _lp):
-        if not user32.IsWindowVisible(hwnd) or user32.GetWindowTextLengthW(hwnd) == 0:
-            return True
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value == me:
-            return True
-        n = user32.GetWindowTextLengthW(hwnd) + 1
-        buf = ctypes.create_unicode_buffer(n)
-        user32.GetWindowTextW(hwnd, buf, n)
-        path, arch = proc_info(pid.value)
-        out.append({"pid": pid.value, "process": os.path.basename(path), "title": buf.value, "path": path, "arch": arch})
+        try:
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n <= 0 or not user32.IsWindowVisible(hwnd):
+                return True
+            pid = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            buf = ctypes.create_unicode_buffer(n + 1)                # UTF-16 text; n counts UTF-16 units
+            user32.GetWindowTextW(hwnd, buf, n + 1)
+            if not window_listable(True, cloaked(hwnd), bool(user32.GetWindow(hwnd, GW_OWNER)),
+                                   bool(user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW), buf.value, pid.value, me):
+                return True
+            path, arch = proc_info(pid.value)
+            out.append({"pid": int(pid.value), "process": os.path.basename(path) or f"PID {pid.value}", "title": buf.value, "path": path, "arch": arch})
+        except Exception:  # noqa: BLE001 - one odd window must not end the enumeration
+            pass
         return True
 
-    user32.EnumWindows(cb, 0)
+    cb_ref = enum_proc(cb)                 # keep a reference for the duration of the call
+    if not user32.EnumWindows(cb_ref, 0):
+        raise OSError(ctypes.get_last_error(), "Windows could not list the open windows")
     return sorted(out, key=lambda w: (w["process"].lower(), w["title"].lower()))

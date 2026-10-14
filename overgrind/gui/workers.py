@@ -29,11 +29,18 @@ class Task(QThread):
             self.failed.emit(f"{type(e).__name__}: {e}")
 
 
-class TaskHost:
-    """Mixin/holder: keeps running tasks alive and lets owners wait for them on close."""
+class TaskHost(QObject):
+    """Holder: keeps running tasks alive, lets owners wait for them on close, and surfaces failures
+    nobody asked to handle (`unhandled`) instead of swallowing them."""
+    unhandled = Signal(str)
 
     def __init__(self):
+        super().__init__()
         self._tasks: set[Task] = set()
+
+    @property
+    def busy(self) -> bool:
+        return any(t.isRunning() for t in self._tasks)
 
     def run_async(self, fn, on_done=None, on_fail=None, parent=None) -> Task:
         t = Task(fn, parent)
@@ -44,15 +51,17 @@ class TaskHost:
             t.deleteLater()
         if on_done:
             t.done.connect(on_done)
-        if on_fail:
-            t.failed.connect(on_fail)
+        t.failed.connect(on_fail if on_fail else self.unhandled)
         t.finished.connect(cleanup)
         t.start()
         return t
 
-    def wait_tasks(self, ms: int = 3000) -> None:
+    def wait_tasks(self, ms: int = 3000) -> bool:
+        """Wait up to `ms` in total. True when nothing is left running."""
+        end = time.monotonic() + ms / 1000.0
         for t in list(self._tasks):
-            t.wait(ms)
+            t.wait(max(1, int((end - time.monotonic()) * 1000)))
+        return not self.busy
 
 
 HOST = TaskHost()
@@ -64,7 +73,8 @@ def run_async(fn, on_done=None, on_fail=None) -> Task:
 
 def default_evidence_dir(project: Project) -> str:
     base = os.environ.get("OVERGRIND_DATA") or os.path.join(tempfile.gettempdir(), "overgrind-runs")
-    d = os.path.join(base, (project.uuid or "project")[:16] or "project", time.strftime("%Y%m%d-%H%M%S"))
+    uid = "".join(ch for ch in (project.uuid or "project")[:16] if ch.isalnum() or ch in "-_") or "project"
+    d = os.path.join(base, uid, time.strftime("%Y%m%d-%H%M%S"))
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -81,6 +91,7 @@ class RunSession(QObject):
         super().__init__(parent)
         self.controller = None
         self.evidence_dir = ""
+        self._gen = 0                       # bumped by shutdown(): a controller built for an older start is discarded
         self.state = "idle"
         self.last_stats = RunStats()
         self._timer = QTimer(self); self._timer.setInterval(poll_ms)
@@ -99,8 +110,14 @@ class RunSession(QObject):
     def start(self, project: Project, spec: AdapterSpec, stop: StopConditions) -> None:
         if self.active:
             return
+        try:
+            self.evidence_dir = default_evidence_dir(project)
+        except OSError as e:
+            self.problem.emit(f"The run could not start. Overgrind needs a writable folder to keep error evidence, "
+                              f"but could not create one ({e.strerror or e}). Set the OVERGRIND_DATA environment variable to a folder you can write to.")
+            return
         self._set("starting")
-        self.evidence_dir = default_evidence_dir(project)
+        gen = self._gen
 
         def go():
             c = backend.new_controller(project, spec, self.evidence_dir, stop)
@@ -108,16 +125,26 @@ class RunSession(QObject):
                 c.on_error(lambda ev: self._errorBridge.emit(ev))
             except Exception:
                 pass
+            if gen != self._gen:        # window closed while we were building it: never start
+                return None
             c.start()
+            if gen != self._gen:        # closed in the tiny gap: stop it here, this thread owns it
+                c.stop()
+                c.join(5)
+                return None
             return c
 
         def ok(c):
+            if c is None or gen != self._gen:
+                return
             self.controller = c
             self._set("running")
             self._timer.start()
             self._poll()
 
         def bad(msg):
+            if gen != self._gen:
+                return
             self.problem.emit(f"The run could not start. {msg}")
             self._set("idle")
         run_async(go, ok, bad)
@@ -172,15 +199,27 @@ class RunSession(QObject):
         elif st.state == "running" and self.state == "paused":
             self._set("running")
 
-    def shutdown(self) -> None:
-        """Called on window close: stop synchronously and clean."""
+    def shutdown(self, wait: bool = True) -> None:
+        """Called on window close. wait=False stops the controller on a thread (state 'stopping' until it is
+        done, then 'idle') so the window never freezes; wait=True blocks (tests, last-resort cleanup)."""
         c = self.controller
+        self._gen += 1
         self._timer.stop()
-        if c is not None:
+        self.controller = None
+        if c is None:
+            self._set("idle")
+            return
+
+        def halt():
             try:
                 c.stop()
                 c.join(5)
             except Exception:
                 pass
-            self.controller = None
-        self._set("idle")
+            return None
+        if wait:
+            halt()
+            self._set("idle")
+            return
+        self._set("stopping")
+        run_async(halt, lambda _r: self._set("idle"), lambda _m: self._set("idle"))

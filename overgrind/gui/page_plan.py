@@ -66,26 +66,6 @@ class PlanPage(PageBase):
             c.radio.toggled.connect(lambda on, k=k: on and self._strategy(k))
         self.body.addLayout(grid)
 
-        opt = QGroupBox("Options"); of = QFormLayout(opt)
-        self.t_spin = QSpinBox(); self.t_spin.setRange(2, 6); self.t_spin.setAccessibleName("t for t-wise")
-        self.t_label = QLabel("Combine this many features (t):")
-        of.addRow(self.t_label, self.t_spin)
-        self.cb_alloff = QCheckBox("Include the case where every feature is off")
-        of.addRow(self.cb_alloff)
-        self.reset = QComboBox(); [self.reset.addItem(t, k) for k, t in RESET]
-        self.interval = QSpinBox(); self.interval.setRange(1, 1000000); self.interval.setSuffix(" cases")
-        rr = QHBoxLayout(); rr.addWidget(self.reset, 1); rr.addWidget(self.interval)
-        of.addRow("Put the app back to its defaults:", rr)
-        self.seed = QSpinBox(); self.seed.setRange(0, 2**31 - 1)
-        self.btn_seed = QPushButton("Random seed")
-        sr = QHBoxLayout(); sr.addWidget(self.seed, 1); sr.addWidget(self.btn_seed)
-        of.addRow("Seed (same seed = same cases):", sr)
-        self.cb_invalid = QCheckBox("Also try values outside the allowed range (can trigger errors on purpose)")
-        self.cb_restart = QCheckBox("Restart the app automatically after a crash")
-        self.cb_shot = QCheckBox("Take a screenshot when something fails")
-        for cb in (self.cb_invalid, self.cb_restart, self.cb_shot):
-            of.addRow(cb)
-        self.body.addWidget(opt)
 
         self.body.addWidget(QLabel("<b>2. How long should it run?</b>"))
         dur = QFrame(); dur.setObjectName("Card"); dl = QVBoxLayout(dur)
@@ -109,24 +89,48 @@ class PlanPage(PageBase):
         line(self.d_pass)
         self.body.addWidget(dur)
 
-        self.body.addWidget(QLabel("<b>3. What will that cover?</b>"))
-        est = QFrame(); est.setObjectName("Card"); el = QVBoxLayout(est)
+        self.body.addWidget(QLabel("<b>3. Options</b>"))
+        opt = QGroupBox(); of = QFormLayout(opt)
+        self.t_spin = QSpinBox(); self.t_spin.setRange(2, 6); self.t_spin.setAccessibleName("t for t-wise")
+        self.t_label = QLabel("Combine this many features (t):")
+        of.addRow(self.t_label, self.t_spin)
+        self.cb_alloff = QCheckBox("Include the case where every feature is off")
+        of.addRow(self.cb_alloff)
+        self.reset = QComboBox(); [self.reset.addItem(t, k) for k, t in RESET]
+        self.interval = QSpinBox(); self.interval.setRange(1, 1000000); self.interval.setSuffix(" cases")
+        rr = QHBoxLayout(); rr.addWidget(self.reset, 1); rr.addWidget(self.interval)
+        of.addRow("Put the app back to its defaults:", rr)
+        self.seed = QSpinBox(); self.seed.setRange(0, 2**31 - 1)
+        self.btn_seed = QPushButton("Random seed")
+        sr = QHBoxLayout(); sr.addWidget(self.seed, 1); sr.addWidget(self.btn_seed)
+        of.addRow("Seed (same seed = same cases):", sr)
+        self.cb_invalid = QCheckBox("Also try values outside the allowed range (can trigger errors on purpose)")
+        self.cb_restart = QCheckBox("Restart the app automatically after a crash")
+        self.cb_shot = QCheckBox("Take a screenshot when something fails")
+        for cb in (self.cb_invalid, self.cb_restart, self.cb_shot):
+            of.addRow(cb)
+        self.body.addWidget(opt)
+        # The estimate and the action buttons live in a footer that stays on screen while the options scroll.
         self.est_text = QLabel(); self.est_text.setWordWrap(True); self.est_text.setTextFormat(Qt.TextFormat.PlainText)
-        f = self.est_text.font(); f.setPointSizeF(f.pointSizeF() * 1.15); self.est_text.setFont(f)
+        self.est_text.setAccessibleName("What this plan will cover")
+        f = self.est_text.font(); f.setBold(True); self.est_text.setFont(f)
         self.est_stats = muted("")
-        el.addWidget(self.est_text); el.addWidget(self.est_stats)
-        self.body.addWidget(est)
-
+        self.footer_layout.addWidget(self.est_text); self.footer_layout.addWidget(self.est_stats)
         bar = QHBoxLayout()
-        self.btn_prev = QPushButton("Preview 20 cases"); self.btn_pre = QPushButton("Run preflight check")
+        self.btn_prev = QPushButton("Preview 20 cases"); self.btn_pre = QPushButton("Run preflight check"); self.btn_pre.setObjectName("Primary")
         self.btn_reset = QPushButton("Reset plan to defaults")
+        self.btn_prev.setToolTip("Show the first 20 test cases this plan would run. Nothing is run.")
+        self.btn_pre.setToolTip("Dry run (Ctrl+R): checks that every element can be found and driven. The app is only read, never changed.")
+        self.btn_reset.setToolTip("Put strategy, duration and options back to the recommended defaults.")
         bar.addWidget(self.btn_prev); bar.addWidget(self.btn_pre); bar.addStretch(1); bar.addWidget(self.btn_reset)
-        self.body.addLayout(bar)
+        self.footer_layout.addLayout(bar)
+        self.footer.setVisible(True)
         self.prev_status = muted(""); self.body.addWidget(self.prev_status)
         self.prev_table = QTableWidget(0, 3); self.prev_table.setHorizontalHeaderLabels(["#", "Feature states", "Control values"])
+        self.prev_table.setAccessibleName("Preview of test cases")
         self._table_style(self.prev_table, 1, 2); self.prev_table.setVisible(False)
         self.body.addWidget(self.prev_table)
-        self.body.addWidget(QLabel("<b>Trust Ledger</b> (preflight check)"))
+        self.body.addWidget(QLabel("<b>Results: Trust Ledger</b> (preflight check)"))
         self.pre_status = muted("Not run yet. The check finds every element we will touch and tells you if we can reliably find and drive it.")
         self.body.addWidget(self.pre_status)
         self.ledger = QTableWidget(0, 4); self.ledger.setHorizontalHeaderLabels(["Result", "Element", "What we found", "How to fix"])
@@ -267,6 +271,7 @@ class PlanPage(PageBase):
     def _preview(self) -> None:
         proj = self.model.project
         self.btn_prev.setEnabled(False); self.prev_status.setText("Building preview...")
+        self.show_below(self.prev_status)
         run_async(lambda: backend.preview(proj, 20), lambda cs: self._prev_done(proj, cs), self._prev_fail)
 
     def _prev_fail(self, msg: str) -> None:
@@ -283,20 +288,24 @@ class PlanPage(PageBase):
             for col, t in enumerate((str(c.seq), st, vals)):
                 self.prev_table.setItem(r, col, QTableWidgetItem(t))
         self.prev_table.setVisible(bool(cases)); self.prev_table.resizeRowsToContents(); self.prev_table.setMinimumHeight(240)
+        self.show_below(self.prev_status)
         self.prev_status.setText(f"First {len(cases)} cases for seed {proj.run.seed}. A * marks a state that is not the default." if cases else "The plan produced no cases. Check that at least one feature is switched on in the Features page.")
 
     # ---- preflight
     def run_preflight(self) -> None:
         proj, spec = self.model.project, self.model.adapter_spec
+        fp = self.model.fingerprint()
         self.btn_pre.setEnabled(False); self.pre_status.setText("Checking every element... the app is only read, never changed.")
-        run_async(lambda: backend.run_preflight(proj, spec), self._pre_done, self._pre_fail)
+        run_async(lambda: backend.run_preflight(proj, spec), lambda rows: self._pre_done(rows, fp), self._pre_fail)
+        self.show_below(self.pre_status)
 
     def _pre_fail(self, msg: str) -> None:
         self.btn_pre.setEnabled(True); self.ledger.setVisible(False)
         self.pre_status.setText(f"The preflight check could not run. {msg}")
 
-    def _pre_done(self, rows: list[dict]) -> None:
+    def _pre_done(self, rows: list[dict], fingerprint: str | None = None) -> None:
         self.btn_pre.setEnabled(True)
+        self.model.set_preflight(rows, fingerprint if fingerprint is not None else self.model.fingerprint())
         label = {"ok": "OK", "warn": "Warning", "fail": "Fail"}
         self.ledger.setRowCount(len(rows))
         for r, row in enumerate(rows):
@@ -306,11 +315,13 @@ class PlanPage(PageBase):
             for col, key in ((1, "element"), (2, "message"), (3, "hint")):
                 self.ledger.setItem(r, col, QTableWidgetItem(row[key]))
         self.ledger.setVisible(bool(rows)); self.ledger.resizeRowsToContents()
+        self.show_below(self.pre_status)
         n = {k: sum(1 for x in rows if x["status"] == k) for k in label}
         if not rows:
             self.pre_status.setText("Nothing to check yet. Add features and controls first.")
         elif n["fail"]:
-            self.pre_status.setText(f"{n['fail']} problem(s) will stop those parts of the test from working. Fix them before you start. ({n['warn']} warning(s), {n['ok']} OK)")
+            self.pre_status.setText(f"{n['fail']} problem(s) will stop those parts of the test from working. Fix them before you start; "
+                                    f"Start will ask you to confirm if you go ahead anyway. ({n['warn']} warning(s), {n['ok']} OK)")
         elif n["warn"]:
             self.pre_status.setText(f"No blocking problems. {n['warn']} warning(s) may make some steps unreliable. ({n['ok']} OK)")
         else:

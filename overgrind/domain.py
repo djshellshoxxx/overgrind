@@ -42,6 +42,8 @@ def _bounds(d: Domain) -> tuple[float | int, float | int]:
         raise ValueError("numeric domain needs minimum and maximum")
     if not (_is_num(lo) and _is_num(hi)) or not (math.isfinite(lo) and math.isfinite(hi)):
         raise ValueError("numeric bounds must be finite numbers")
+    if d.kind == "float":
+        lo, hi = float(lo), float(hi)     # exact int bounds beyond 2**53 must not out-range the floats drawn
     if lo > hi:
         raise ValueError("minimum > maximum")
     return lo, hi
@@ -110,7 +112,7 @@ def contains(domain: Domain, value: Value, strict_step: bool = True) -> bool:
             q = (value - g.lo) / g.step
             return abs(q - round(q)) <= 1e-9 * max(1.0, abs(q))
         return True
-    except ValueError:
+    except (ValueError, OverflowError):
         return False
 
 
@@ -269,8 +271,11 @@ def clamp(domain: Domain, value: Value) -> Value:
             return g.at(g.n if value > 0 else 0)
         if k == "integer":
             value = round(value)
-    q, r = divmod(value - g.lo, g.step)
-    idx = int(q + (1 if 2 * r >= g.step else 0))
+    try:
+        q, r = divmod(value - g.lo, g.step)
+        idx = int(q + (1 if 2 * r >= g.step else 0))
+    except (OverflowError, ValueError):     # step vastly smaller than the span (or inf/nan arithmetic)
+        idx = 0 if not value > g.lo else g.n
     return g.at(max(0, min(g.n, idx)))
 
 
