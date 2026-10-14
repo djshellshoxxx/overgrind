@@ -13,7 +13,7 @@ Overgrind is an extensible, deterministic **GUI feature-combination fuzzing and 
 - **S**: random trials per ordered feature pair.
 - **T = F² × S**: cases per campaign.
 
-Every test case samples *all* C controls, applies their values, and activates the two features in pair order. The case order is shuffled using a deterministic PRNG. Numeric values emphasize min/max/zero/midpoint in addition to uniform samples. The same manifest, Python version and seed reproduce the generated test sequence. Timing, UI state, and outside processes may still introduce nondeterminism.
+Every test case samples *all* C controls, then activates the two features in pair order and applies the eligible control values. A control with optional requires_features is only written when those features are active in the pair. This supports GUI widgets that are disabled outside a particular effect section. The case order is shuffled using a deterministic PRNG. Numeric values emphasize min/max/zero/midpoint in addition to uniform samples. The same manifest, Python version and seed reproduce the generated test sequence. Timing, UI state, and outside processes may still introduce nondeterminism.
 
 Continuous control domains and arbitrary text have too many possibilities to enumerate exhaustively. **Complete feature-pair coverage does not imply complete GUI state or interaction-path coverage.** The runner caps campaigns at 250,000 cases per run to avoid allocating unbounded scheduling memory.
 
@@ -55,13 +55,14 @@ Developer-provided manifests are also supported when UIA is incomplete. For cust
       ],
       "controls": [
         {"id": "wet", "kind": "float", "minimum": 0, "maximum": 1,
+         "requires_features": ["delay"],
          "selector": {"auto_id": "wet", "control_type": "Slider"}},
         {"id": "quality", "kind": "choice", "options": ["Low", "High"],
          "selector": {"auto_id": "quality", "control_type": "ComboBox"}}
       ]
     }
 
-Control kinds: **integer**, **float**, **boolean**, **choice**, **text** (requires max_length, optional alphabet). Selectors use a stable automation ID, or a visible title with an optional control_type. Unique, stable selectors matter.
+Control kinds: **integer**, **float**, **boolean**, **choice**, **text** (requires max_length, optional alphabet). A control's optional requires_features is a list of feature ids that must all be active in the current pair before that widget is set. All controls still receive sampled values in the record; applied_controls identifies which were written. Selectors use a stable automation ID, or a visible title with an optional control_type. Unique, stable selectors matter.
 
 Feature modes:
 - **enable**: an idempotent UIA toggle action (use for independent checkboxes). Before each case, the Windows adapter attempts to disable all such features, then enables the selected pair. Self-pair A→A enables A twice without toggling it back off.
@@ -77,7 +78,7 @@ Review cases and selectors first. Execute against an application you control, pr
 
     python -m overgrind run --config examples/demo.json --samples 100 --seed 2048 --settle-ms 25 --report reports/run-2048.jsonl --execute
 
-A run deliberately requires **--execute**. Each case is written as one JSON Lines record with case index, seed, ordered pair, exact sampled inputs, elapsed time, status, and error. Output files are create-only: existing evidence is never overwritten. Use --stop-on-failure to end on the first error. Exit code 0 = all cases passed; 1 = some failed; 2 = config/runtime problem.
+A run deliberately requires **--execute**. Each case is written as one JSON Lines record with case index, seed, ordered pair, exact sampled inputs, the controls actually applied, elapsed time, status, and error. Output files are create-only: existing evidence is never overwritten. Use --stop-on-failure to end on the first error. Exit code 0 = all cases passed; 1 = some failed; 2 = config/runtime problem.
 
 To replay just case index 127 from a 100-samples-per-pair campaign:
 
