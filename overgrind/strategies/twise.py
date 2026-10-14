@@ -348,14 +348,14 @@ class Generator(BaseGenerator):
             tags = (f"twise:{self.t}", "sampled")
         values = {}
         for c in range(plan.n):
+            bk = bks[c]
             if row is not None and c in cpos:
-                values[plan.ids[c]] = plan.sample_bucket(c, bks[c][row[cpos[c]]], rng)
-            elif bks and len(bks[c]) >= 1 and row is None:
-                values[plan.ids[c]] = plan.sample_bucket(c, bks[c][rng.randrange(len(bks[c]))], rng)
-            elif bks:
-                values[plan.ids[c]] = plan.sample_bucket(c, bks[c][0], rng)
+                bucket = bk[row[cpos[c]]]
+            elif row is None:
+                bucket = bk[rng.randrange(len(bk))]
             else:
-                values[plan.ids[c]] = None
+                bucket = bk[0]
+            values[plan.ids[c]] = plan.sample_bucket(c, bucket, rng)
         self.cases_in_sweep += 1
         return self.make_case(idx, values, tags=tags)
 

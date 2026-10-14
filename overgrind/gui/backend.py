@@ -263,8 +263,13 @@ def inspect_target(spec: AdapterSpec | None, target: TargetRef) -> list[ElementI
             pass
 
 
-def default_adapter_spec() -> AdapterSpec | None:
-    return None if sys.platform == "win32" else AdapterSpec("overgrind.adapters.mock:MockAdapter", {"seed": 1})
+def resolve_spec(spec: AdapterSpec | None) -> AdapterSpec:
+    """The adapter a real run uses: the given one (demo) or UIA on Windows."""
+    if spec is not None:
+        return spec
+    if sys.platform == "win32":
+        return AdapterSpec("overgrind.adapters.uia:UiaAdapter")
+    raise BackendMissing("Testing a real program needs Windows. Use File > Open demo project to try the interface here.")
 
 
 def new_controller(project: Project, spec: AdapterSpec, evidence_dir: str, stop: StopConditions | None = None):
