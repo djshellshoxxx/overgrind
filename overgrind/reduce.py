@@ -159,13 +159,15 @@ def ddmin(items: list, test: Callable[[list], bool]) -> list:
 def shrink_candidates(value: Any, default: Any, kind: str = "") -> list:
     """Simpler values to try, most aggressive first. Never contains `value` itself."""
     c: list = []
+    if value == default and type(value) is type(default):
+        return c
     if default is not None:
         c.append(default)
     if isinstance(value, bool):
         pass
     elif isinstance(value, (int, float)) and isinstance(default, (int, float)) and not isinstance(default, bool):
         if isinstance(value, int) and isinstance(default, int):
-            diff, v = value - default, value
+            diff = value - default
             while abs(diff) > 1:
                 diff = int(diff / 2)  # trunc toward 0
                 c.append(default + diff)

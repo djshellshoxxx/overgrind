@@ -53,6 +53,7 @@ class TestDdmin(unittest.TestCase):
 
         def runner(acts):
             idx = [(a.kind, a.target) for a in acts if a.kind == "state"]
+            idx = [(k, tg) for (k, tg), a in zip(idx, [a for a in acts if a.kind == "state"]) if a.value == "on"]
             ok = ("state", "A") in idx and ("state", "B") in idx and idx.index(("state", "A")) < idx.index(("state", "B"))
             return crash() if ok else Outcome()
         out = rd.Reducer(make_project(), runner=runner).reduce(event_with(hist))
@@ -123,11 +124,11 @@ class TestShrink(unittest.TestCase):
         out = rd.Reducer(make_project(), runner=runner).reduce(event_with(hist))
         self.assertEqual(out.reduced["steps"], [{"kind": "control", "target": "vol", "value": 10}])
 
-    def test_state_turned_default_when_needed_but_equal(self):
+    def test_value_goes_to_default(self):
         hist = [Action("state", "A", "on"), Action("control", "vol", 40)]
         runner = lambda acts: crash() if any(a.target == "vol" for a in acts) else Outcome()
         out = rd.Reducer(make_project(), runner=runner).reduce(event_with(hist))
-        self.assertEqual(out.reduced["values"], {"vol": 1})  # halving toward default 0 stops at 1 only if 0 passes
+        self.assertEqual(out.reduced["values"], {"vol": 0})  # default reached
         self.assertEqual(out.reduced["state"], {})
 
 
