@@ -192,3 +192,21 @@ class ScopeSemantics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThresholdShrink(unittest.TestCase):
+    def test_crash_iff_x_ge_37_shrinks_to_37(self):
+        from overgrind.types import ControlDef, Domain, FeatureDef, Project, Selector, TargetRef
+        pr = Project("p", TargetRef(), (FeatureDef("A"),),
+                     (ControlDef("x", "integer", Selector(auto_id="x"), Domain("integer", 0, 100), default=10),))
+        n = []
+
+        def r(acts):
+            n.append(1)
+            v = [a.value for a in acts if a.kind == "control"]
+            return Outcome(False, "crash", "boom") if v and v[0] >= 37 else Outcome()
+        sig = ev.outcome_fingerprint(Outcome(False, "crash", "boom"))
+        e = mk_event(sig=sig, history=[Action("reset", "*"), Action("control", "x", 91)])
+        out = rd.Reducer(pr, runner=r).reduce(e)
+        self.assertEqual(out.reduced["values"], {"x": 37})
+        self.assertLessEqual(len(n), 25)

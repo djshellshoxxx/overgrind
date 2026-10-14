@@ -194,7 +194,7 @@ class ErrorsPage(PageBase):
         self.view.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.view.setAccessibleName("Errors"); self.view.setMinimumHeight(120)
         h = self.view.horizontalHeader(); h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for col, w in enumerate((140, 120, 0, 120, 56, 130)):      # fixed widths: sizing to contents would read every row
+        for col, w in enumerate((132, 92, 0, 96, 50, 124)):      # fixed widths: sizing to contents would read every row
             if w:
                 h.resizeSection(col, w)
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch); h.setMinimumSectionSize(48)

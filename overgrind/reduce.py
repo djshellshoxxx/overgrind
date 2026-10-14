@@ -441,6 +441,25 @@ class Reducer:
                         self._best = steps
                         progressed = True
                         break
+            # binary search between the (passing) default and the failing value: finds the threshold
+            cur = steps[i].value
+            if (isinstance(cur, (int, float)) and not isinstance(cur, bool)
+                    and isinstance(default, (int, float)) and not isinstance(default, bool)):
+                is_int = isinstance(cur, int) and isinstance(default, int)
+                lo, hi = default, cur
+                for _ in range(40 if is_int else 10):
+                    if abs(hi - lo) <= (1 if is_int else 1e-9 * max(1.0, abs(hi))):
+                        break
+                    mid = (lo + hi) // 2 if is_int else (lo + hi) / 2
+                    if mid == lo or mid == hi:
+                        break
+                    cand = steps[:i] + [replace(steps[i], value=mid)] + steps[i + 1:]
+                    if self._test(cand):
+                        hi = mid
+                        steps = cand
+                        self._best = steps
+                    else:
+                        lo = mid
         return steps
 
     def _build_reduced(self, event: ErrorEvent, orig: list, steps: list, reliability: str,

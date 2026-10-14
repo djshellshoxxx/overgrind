@@ -14,7 +14,7 @@ from ..states import derive_seed, pow2_text
 from ..types import Coverage
 from . import BaseGenerator
 
-DEFAULT_BUDGET = 1_000_000
+DEFAULT_BUDGET = 4_194_304   # spec U1 3.3: enumerable up to 2^22 states (permutation is O(1) memory)
 COUNT_CAP = 4096          # per-state visit vector is kept (and reported) up to this many states
 HIST_BINS = 9             # histogram bins 0..7 and '8 or more'
 

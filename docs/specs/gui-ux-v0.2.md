@@ -73,3 +73,12 @@ Plain, calm, second person. Short sentences. Say what happened, why, and what to
 `ProjectModel` (QObject) owns the Project, path, dirty flag and undo stack; every edit is `dataclasses.replace` through `ProjectModel.edit(label, fn)`. Pages observe `changed`. All long calls (scan, estimate, preview, preflight, reduce, differential, start/stop) run on `QThread` workers; the run page only polls `RunController.stats()` from a 400 ms `QTimer`. Backend access is centralised in `gui/backend.py` (lazy imports, tolerant result normalisation).
 Atlas data note: `RunStats.coverage` has no per-state counts, so cell counts are tallied from the polled action tail ("sampled"); totals and ring come from `Coverage`.
 Stop conditions are not a field of `Project`, so the GUI stores them as `run.strategy_options['stop']` (a `StopConditions` dict, saved with the project) and passes `stop=` to `RunController`.
+
+## QA-GUI amendments (v0.2 hardening)
+- **Start gate (Trust Ledger)**: a preflight with any Fail row, while it still describes the current project, makes Start ask for the project name to be typed. The same typed confirmation covers enabled dangerous features and controls of unknown type. It is asked once per project version.
+- **Validation banner**: shows this page's problems plus the first blocking problem from another page with a Fix link; validate() texts are rewritten in plain words using feature names.
+- **Plan** keeps the estimate and [Preview] [Run preflight check] in a footer that is always visible; results scroll into view.
+- **Errors**: actions sit above the detail text; Reproduce shows replay progress and a Cancel that keeps the best result; double-click opens the evidence folder; the list is a lazy model (5,000 rows stay responsive, reloads insert only new rows).
+- **Closing during a run** stops the controller on a background thread, then closes. Unexpected exceptions are logged to `overgrind-gui.log` and shown calmly (never silently).
+- **Undo**: typing in one box is one undo step; undoing back to the saved state clears the dirty flag.
+- **Atlas**: cells wrap for many states, red outline plus "!" marks states where an error happened, hover tooltips; uses exact per-state counts when `Coverage` provides them, otherwise says "sampled".
