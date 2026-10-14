@@ -248,14 +248,16 @@ class PlanPage(PageBase):
     def _est_done(self, seq: int, d: dict) -> None:
         if seq != self._est_seq:
             return
-        self.est_text.setText(str(d.get("text") or "No estimate text provided."))
-        parts = []
-        if d.get("valid_states") is not None:
-            parts.append(f"Valid feature states: {d['valid_states']:,}" if isinstance(d["valid_states"], int) else f"Valid feature states: {d['valid_states']}")
-        if d.get("cartesian") is not None:
-            c = d["cartesian"]
-            parts.append("All value combinations: " + (f"{c:,}" if isinstance(c, int) and c < 10**15 else f"{float(c):.2e}"))
-        self.est_stats.setText("   |   ".join(parts))
+        valid, cart = d.get("valid_states"), d.get("cartesian")
+        head = f"{valid:,} valid feature states" if isinstance(valid, int) else "Too many feature states to count exactly"
+        if cart is None:
+            head += "; value combinations cannot be counted (random sampling, not exhaustive)"
+        else:
+            head += f"; ~{float(cart):.2g} value combinations" if cart >= 10 ** 6 else f"; {cart:,} value combinations"
+            if cart >= 10 ** 6:
+                head += " (random sampling, not exhaustive)"
+        self.est_text.setText(head)
+        self.est_stats.setText(str(d.get("text") or ""))
 
     def _est_fail(self, seq: int, msg: str) -> None:
         if seq == self._est_seq:

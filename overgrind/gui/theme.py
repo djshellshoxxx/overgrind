@@ -140,7 +140,7 @@ RELIABILITY = {
     "reliable": ("Reliable", "ok", "Fails every time it is replayed."),
     "flaky": ("Flaky", "warn", "Fails only sometimes."),
     "not_reproducible": ("Not reproducible", "fail", "Did not fail again when replayed."),
-    "unconfirmed": ("Unconfirmed", "unknown", "Not replayed yet."),
+    "unconfirmed": ("Unconfirmed", "muted", "Not replayed yet."),
 }
 CATEGORY_LABEL = {
     "crash": "Crash", "hang": "Hang", "dialog": "Error dialog", "assertion": "Check failed",

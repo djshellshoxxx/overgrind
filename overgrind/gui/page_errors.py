@@ -67,7 +67,7 @@ class ErrorsPage(PageBase):
         bar.addWidget(self.cat); bar.addWidget(self.search, 1); bar.addWidget(self.btn_reload)
         self.body.addLayout(bar)
         self.empty = empty_state("No failures so far.\nFailures appear here the moment they happen.")
-        self.body.addWidget(self.empty)
+        self.body.addWidget(self.empty, 1)
 
         split = QSplitter(Qt.Orientation.Vertical); split.setChildrenCollapsible(False)
         self.sm = QStandardItemModel(0, 6)

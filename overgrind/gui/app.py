@@ -20,18 +20,13 @@ from .page_errors import ErrorsPage
 from .page_features import FeaturesPage
 from .page_inspect import InspectPage
 from .page_plan import PlanPage
-from .page_run import RunPage
+from .page_run import RunPage, friendly_reason
 from .page_target import TargetPage
 from .sample import DEMO_ADAPTER, demo_project
 from .widgets import PAGE_NAMES, friendly_issue
 from .workers import HOST, RunSession
 
 FILTER = "Overgrind projects (*.ovg.json);;JSON files (*.json);;All files (*)"
-STOP_REASONS = {
-    "stopped by user": "you stopped it", "stopped": "you stopped it", "max_seconds": "the time limit was reached",
-    "max_cases": "the test-case limit was reached", "max_unique_errors": "the error limit was reached",
-    "first_error": "the first error was found", "coverage_complete": "every state has been visited once",
-}
 
 
 def settings() -> QSettings:
@@ -188,12 +183,22 @@ class MainWindow(QMainWindow):
         cur = self.stack.currentIndex()
         if cur in (5, 6) or not self.issues:
             self.banner.setVisible(False); return
-        mine = [x for x in self.issues if x[2] == cur] or self.issues
+        mine = [x for x in self.issues if x[2] == cur]
+        if not mine:
+            blockers = [x for x in self.issues if x[0] == "fail"]
+            if not blockers:
+                self.banner.setVisible(False); return
+            first = blockers[0]
+            self.banner.setText(f"<b>Problem on another page:</b> {first[1]} <a href='{first[2]}'>Fix: go to {PAGE_NAMES[first[2]]}</a>"
+                                + (f" (and {len(blockers) - 1} more)" if len(blockers) > 1 else ""))
+            c = theme.sem("fail"); c.setAlpha(36)
+            self.banner.setStyleSheet(f"background:rgba({c.red()},{c.green()},{c.blue()},{c.alpha()});")
+            self.banner.setVisible(True); return
         lines = []
         for level, text, page in mine[:3]:
             tag = "Problem" if level == "fail" else "Heads-up"
             col = theme.sem_hex("fail" if level == "fail" else "warn")
-            fix = f" <a href='{page}'>Fix: go to {PAGE_NAMES[page]}</a>" if page != cur else ""
+            fix = ""
             lines.append(f"<span style='color:{col}'><b>{tag}:</b></span> {text}{fix}")
         if len(mine) > 3:
             lines.append(f"...and {len(mine) - 3} more.")
@@ -233,7 +238,7 @@ class MainWindow(QMainWindow):
         if st == "finished":
             reason = self.session.last_stats.stop_reason
             if reason:
-                self.statusBar().showMessage(f"Run finished because {STOP_REASONS.get(reason, reason)}.", 8000)
+                self.statusBar().showMessage("Run finished: " + friendly_reason(reason), 8000)
 
     def _update_title(self) -> None:
         p = self.model.project
@@ -371,6 +376,8 @@ def make_app(argv: list[str] | None = None) -> QApplication:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import multiprocessing
+    multiprocessing.freeze_support()
     ap = argparse.ArgumentParser(prog="python -m overgrind.gui", description="Overgrind desktop GUI")
     ap.add_argument("--demo", action="store_true", help="load a sample project wired to the built-in mock app")
     ap.add_argument("project", nargs="?", help="a .ovg.json project to open")

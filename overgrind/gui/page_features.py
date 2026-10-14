@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 
 from ..types import ConstraintDef, FeatureDef, Provenance
 from . import backend, theme
-from .widgets import PageBase, empty_state, muted
+from .widgets import PageBase, empty_state, fit_table, muted
 from .workers import run_async
 
 KIND_LABEL = {"toggle": "On/off switch", "multistate": "Several states", "action": "Button / action"}
@@ -152,7 +152,7 @@ class FeaturesPage(PageBase):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setAlternatingRowColors(True); self.table.verticalHeader().setVisible(False)
-        self.table.setMinimumHeight(190); self.table.setAccessibleName("Features")
+        self.table.setAccessibleName("Features")
         h = self.table.horizontalHeader(); h.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch); h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.setItemDelegateForColumn(1, ComboDelegate(lambda ix: list(KIND_LABEL.values()), self.table))
@@ -171,7 +171,7 @@ class FeaturesPage(PageBase):
 
         box = QGroupBox("Rules between features")
         bl = QVBoxLayout(box)
-        self.rules = QListWidget(); self.rules.setMaximumHeight(110); self.rules.setAccessibleName("Rules")
+        self.rules = QListWidget(); self.rules.setMaximumHeight(80); self.rules.setAccessibleName("Rules")
         bl.addWidget(self.rules)
         self.btn_rule_del = QPushButton("Remove selected rule")
         bl.addWidget(self.btn_rule_del, 0, Qt.AlignmentFlag.AlignLeft)
@@ -225,6 +225,7 @@ class FeaturesPage(PageBase):
         feats = self.model.project.features
         self.empty.setVisible(not feats)
         self.table.setVisible(bool(feats))
+        fit_table(self.table, len(feats), 3, 9)
         sig = tuple((f.id, f.name, f.states) for f in feats)
         if sig != self._sig:
             self._sig = sig

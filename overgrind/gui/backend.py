@@ -176,7 +176,7 @@ def selector_report(s: Selector) -> SelectorReport:
     except Exception:
         pass
     fixes = _fix_hints(s)
-    if score >= 85 and not fixes:
+    if score >= 90 or any(k in reason.lower() for k in ("hint", "ask developers", "add automationid")):
         fixes = []
     return SelectorReport(score, reason, fixes, fallbacks, estimated)
 
@@ -204,6 +204,11 @@ def _normalise_fallback(item) -> tuple[str, int | None]:
         if len(item) > 1 and isinstance(item[1], (int, float)):
             sc = _normalise_score(item[1])[0]
     if isinstance(sel, Selector):
+        if sc is None:
+            try:
+                sc = _normalise_score(_fn("project", "selector_score")(sel))[0]
+            except Exception:
+                sc = None
         return describe_selector(sel), sc
     return str(sel), sc
 
@@ -289,54 +294,19 @@ def evidence_store(directory: str):
 
 
 def run_preflight(project: Project, spec: AdapterSpec | None) -> list[dict]:
-    """Normalised ledger rows: {element, status(ok|warn|fail), message, hint}."""
-    mod = _mod("preflight")
-    f = None
-    for n in ("run", "check", "preflight", "run_preflight"):
-        f = getattr(mod, n, None)
-        if callable(f):
-            break
-    if f is None:
-        raise BackendMissing("The preflight check is not available.")
-    params = _inspect.signature(f).parameters
-    args: list[Any] = [project]
-    if len(params) > 1 and spec is not None:
-        args.append(spec)
-    raw = f(*args)
-    return [_ledger_row(r) for r in _iter_rows(raw)]
-
-
-def _iter_rows(raw):
-    if raw is None:
-        return []
-    for attr in ("rows", "entries", "items", "results"):
-        if hasattr(raw, attr):
-            return list(getattr(raw, attr))
-    if isinstance(raw, dict):
-        return list(raw.values()) if all(isinstance(v, (dict, tuple, list)) or hasattr(v, "__dict__") for v in raw.values()) else [raw]
-    return list(raw)
-
-
-def _get(o, *names, default=""):
-    for n in names:
-        if isinstance(o, dict) and n in o:
-            return o[n]
-        if hasattr(o, n):
-            return getattr(o, n)
-    return default
-
-
-def _ledger_row(r) -> dict:
-    if isinstance(r, (tuple, list)):
-        r = dict(zip(("element", "status", "message", "hint"), r))
-    st = str(_get(r, "status", "level", "result", default="ok")).lower()
-    st = {"pass": "ok", "passed": "ok", "warning": "warn", "error": "fail", "failed": "fail"}.get(st, st)
-    return {
-        "element": str(_get(r, "element", "id", "name", "target", "subject")),
-        "status": st if st in ("ok", "warn", "fail") else "warn",
-        "message": str(_get(r, "message", "detail", "text", "what")),
-        "hint": str(_get(r, "hint", "fix", "advice", "suggestion")),
-    }
+    """Trust Ledger rows: {element, status(ok|warn|fail), message, hint}. Slow: worker thread only."""
+    f = _fn("preflight", "preflight")
+    report = f(project, resolve_spec(spec))
+    rows = []
+    for it in report.items:
+        st = {"info": "ok"}.get(it.status, it.status)
+        bad = [c for c in it.checks if c.status in ("warn", "fail")]
+        msg = "; ".join(f"{c.name}: {c.detail}" for c in bad) or "; ".join(c.detail for c in it.checks if c.detail) or "Looks fine."
+        if it.tier and st == "ok":
+            msg += f" (found by {it.tier}, stability {it.score}/100)"
+        rows.append({"element": f"{it.kind} {it.id}", "status": st if st in ("ok", "warn", "fail") else "warn",
+                     "message": msg, "hint": "; ".join(it.hints)})
+    return rows
 
 
 def suggest_dependencies(project: Project, spec: AdapterSpec | None) -> list[dict]:

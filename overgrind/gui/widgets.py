@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
@@ -22,11 +23,13 @@ def friendly_issue(msg: str) -> tuple[str, str, int]:
     if text.lower().startswith("warning:"):
         level, text = "warn", text[8:].strip()
     low = text.lower()
-    if "target" in low or "exe" in low or "process" in low:
-        page = 0
-    elif "control" in low or "domain" in low or "range" in low or "scope" in low or "default" in low and "feature" not in low:
+    if re.match(r"(control\b|control #)", low):
         page = 3
-    elif any(w in low for w in ("strategy", "seed", "reset", "timeout", "stop", "run ", "interval")):
+    elif re.match(r"(feature\b|constraint\b|no enabled features|no features)", low):
+        page = 2
+    elif re.search(r"\b(target|exe|process|window)\b", low):
+        page = 0
+    elif re.search(r"\b(strategy|seed|reset|timeout|stop|interval|run)\b", low):
         page = 4
     else:
         page = 2
@@ -229,3 +232,11 @@ class Atlas(QWidget):
         p.setPen(pal.placeholderText().color())
         p.drawText(QRectF(label_w, y, self.width() - label_w, 20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    "Cell = state name and how often it was seen (sampled). Dashed = not seen yet.")
+
+
+def fit_table(view, rows: int, min_rows: int = 3, max_rows: int = 8) -> None:
+    """Size a table to its rows (within bounds) so pages don't show big empty areas."""
+    n = max(min_rows, min(max_rows, rows))
+    h = view.horizontalHeader().height() or 26
+    row_h = view.verticalHeader().defaultSectionSize() or 28
+    view.setFixedHeight(h + n * row_h + 4)

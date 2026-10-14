@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 
 from ..types import ControlDef, Domain, Provenance, Selector
 from . import backend, theme
-from .widgets import PageBase, empty_state, muted
+from .widgets import PageBase, empty_state, fit_table, muted
 
 KIND_LABEL = {"boolean": "On/off", "integer": "Whole number", "float": "Decimal number", "choice": "Choice", "text": "Text"}
 HEAD = ["Control", "Type", "Original range", "We will test", "Only when", "Flags", "Source"]
@@ -36,7 +36,7 @@ class ControlsPage(PageBase):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True); self.table.verticalHeader().setVisible(False)
-        self.table.setMinimumHeight(160); self.table.setAccessibleName("Controls")
+        self.table.setAccessibleName("Controls")
         h = self.table.horizontalHeader(); h.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch); h.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.body.addWidget(self.table)
@@ -124,6 +124,7 @@ class ControlsPage(PageBase):
         cur = self.current()
         cur_id = cur.id if cur else None
         ctrls = self.model.project.controls
+        fit_table(self.table, len(ctrls), 3, 7)
         self.empty.setVisible(not ctrls); self.table.setVisible(bool(ctrls)); self.btn_del.setEnabled(bool(ctrls))
         names = {f.id: (f.name or f.id) for f in self.model.project.features}
         self.table.blockSignals(True)

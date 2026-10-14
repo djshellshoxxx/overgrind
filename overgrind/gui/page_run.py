@@ -18,6 +18,21 @@ STATE_TEXT = {
 }
 
 
+STOP_REASONS = {
+    "stopped by user": "you stopped it.", "stopped": "you stopped it.", "max_seconds": "the time limit was reached.",
+    "max_cases": "the test-case limit was reached.", "max_unique_errors": "the error limit was reached.",
+    "first_error": "the first error was found.", "coverage_complete": "every state has been visited once.",
+}
+
+
+def friendly_reason(reason: str) -> str:
+    if reason in STOP_REASONS:
+        return STOP_REASONS[reason]
+    if reason.startswith("controller error"):
+        return "Overgrind itself hit a problem and could not continue (not an app bug). Details: " + reason[:240]
+    return reason[:240]
+
+
 def fmt_time(s: float) -> str:
     s = int(s)
     return f"{s // 3600:d}:{(s % 3600) // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60:02d}:{s % 60:02d}"
@@ -162,7 +177,7 @@ class RunPage(PageBase):
     def on_state(self, st: str) -> None:
         text = STATE_TEXT.get(st, st)
         if st == "finished" and self.session.last_stats.stop_reason:
-            text = f"Finished: {self.session.last_stats.stop_reason}"
+            text = "Finished: " + friendly_reason(self.session.last_stats.stop_reason)
         self.state_label.setText(text)
         self._update_buttons()
 

@@ -34,9 +34,9 @@ class InspectPage(PageBase):
         split = QSplitter(Qt.Orientation.Horizontal); split.setChildrenCollapsible(False)
         self.tree = QTreeWidget(); self.tree.setHeaderLabels(["Element", "Type", "Looks like", "Source"])
         self.tree.setAlternatingRowColors(True); self.tree.setUniformRowHeights(True)
-        self.tree.setMinimumHeight(330); self.tree.setMinimumWidth(320)
+        self.tree.setMinimumHeight(300); self.tree.setMinimumWidth(320)
         self.tree.setAccessibleName("Element tree")
-        self.tree.setColumnWidth(0, 200); self.tree.setColumnWidth(1, 90); self.tree.setColumnWidth(2, 90)
+        self.tree.setColumnWidth(0, 170); self.tree.setColumnWidth(1, 80); self.tree.setColumnWidth(2, 70)
         split.addWidget(self.tree)
 
         self.detail = QFrame(); self.detail.setObjectName("Card")
@@ -75,7 +75,7 @@ class InspectPage(PageBase):
         db.addStretch(1)
         dv.addWidget(self.d_body)
         split.addWidget(self.detail)
-        split.setStretchFactor(0, 3); split.setStretchFactor(1, 4)
+        split.setStretchFactor(0, 3); split.setStretchFactor(1, 4); split.setSizes([430, 470])
         self.body.addWidget(split, 1)
         self.tree.setMaximumHeight(16777215)
 
