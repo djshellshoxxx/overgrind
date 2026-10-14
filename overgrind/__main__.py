@@ -32,6 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--seed", type=int, default=1)
     run.add_argument("--report", type=Path, required=True)
     run.add_argument("--settle-ms", type=int, default=0)
+    run.add_argument("--case-index", type=int, default=None,
+                     help="Replay just this zero-based index from the seeded plan")
     run.add_argument("--stop-on-failure", action="store_true")
     run.add_argument("--execute", action="store_true",
                      help="Required to allow changing the application")
@@ -79,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         counts = execute(
             spec, adapter, args.report, samples=args.samples, seed=args.seed,
             stop_on_failure=args.stop_on_failure, settle_ms=args.settle_ms,
+            only_index=args.case_index,
         )
         print(json.dumps({"cases": sum(counts.values()), **counts,
                           "report": str(args.report), "seed": args.seed}))
