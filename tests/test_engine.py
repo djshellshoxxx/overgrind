@@ -198,6 +198,44 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(counts, {"passed": 0, "failed": 1})
             self.assertEqual(len(path.read_text().splitlines()), 1)
 
+    def test_feature_scoped_controls_are_only_written_when_available(self):
+        spec = AppSpec.from_dict({
+            "title_regex": "Test",
+            "features": [
+                {"id": "a", "selector": {"auto_id": "a"}},
+                {"id": "b", "selector": {"auto_id": "b"}}
+            ],
+            "controls": [
+                {"id": "global", "kind": "boolean",
+                 "selector": {"auto_id": "global"}},
+                {"id": "a_knob", "kind": "boolean", "requires_features": ["a"],
+                 "selector": {"auto_id": "a_knob"}},
+                {"id": "both", "kind": "boolean", "requires_features": ["a", "b"],
+                 "selector": {"auto_id": "both"}}
+            ]
+        })
+        adapter = FakeAdapter()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "scoped.jsonl"
+            counts = execute(spec, adapter, path, samples=1, seed=7)
+            rows = [json.loads(x) for x in path.read_text().splitlines()]
+        self.assertEqual(counts, {"passed": 4, "failed": 0})
+        self.assertEqual(sum(key == "global" for key, _ in adapter.sets), 4)
+        self.assertEqual(sum(key == "a_knob" for key, _ in adapter.sets), 3)
+        self.assertEqual(sum(key == "both" for key, _ in adapter.sets), 2)
+        self.assertTrue(all("global" in row["applied_controls"] for row in rows))
+
+    def test_rejects_unknown_control_feature_dependency(self):
+        with self.assertRaises(ValueError):
+            AppSpec.from_dict({
+                "title_regex": "Test",
+                "features": [{"id": "a", "selector": {"auto_id": "a"}}],
+                "controls": [
+                    {"id": "x", "kind": "boolean", "requires_features": ["missing"],
+                     "selector": {"auto_id": "x"}}
+                ]
+            })
+
     def test_replay_single_case_preserves_original_index_and_inputs(self):
         app = application()
         plan = list(generate_cases(app, samples=3, seed=28))
