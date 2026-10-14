@@ -40,6 +40,9 @@ def execute(
             start = time.monotonic()
             status, error = "passed", None
             try:
+                prepare = getattr(adapter, "prepare_case", None)
+                if callable(prepare):
+                    prepare(spec.features)
                 for control in spec.controls:
                     adapter.set_control(control, case.values[control.id])
                 adapter.activate_feature(feature_index[case.first])
