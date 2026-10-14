@@ -1,0 +1,82 @@
+{
+  "title_regex": "Demo Audio App.*",
+  "features": [
+    {
+      "id": "filter",
+      "mode": "enable",
+      "selector": {
+        "auto_id": "filterEnabled",
+        "control_type": "CheckBox"
+      }
+    },
+    {
+      "id": "delay",
+      "mode": "enable",
+      "selector": {
+        "auto_id": "delayEnabled",
+        "control_type": "CheckBox"
+      }
+    },
+    {
+      "id": "reverb",
+      "mode": "enable",
+      "selector": {
+        "auto_id": "reverbEnabled",
+        "control_type": "CheckBox"
+      }
+    }
+  ],
+  "controls": [
+    {
+      "id": "drive",
+      "kind": "float",
+      "minimum": 0,
+      "maximum": 100,
+      "selector": {
+        "auto_id": "driveSlider",
+        "control_type": "Slider"
+      }
+    },
+    {
+      "id": "stages",
+      "kind": "integer",
+      "minimum": 1,
+      "maximum": 16,
+      "selector": {
+        "auto_id": "stagesSpin",
+        "control_type": "Spinner"
+      }
+    },
+    {
+      "id": "oversampling",
+      "kind": "choice",
+      "options": [
+        "Off",
+        "2x",
+        "4x",
+        "8x"
+      ],
+      "selector": {
+        "auto_id": "oversamplingCombo",
+        "control_type": "ComboBox"
+      }
+    },
+    {
+      "id": "bypass",
+      "kind": "boolean",
+      "selector": {
+        "auto_id": "bypassCheck",
+        "control_type": "CheckBox"
+      }
+    },
+    {
+      "id": "preset_name",
+      "kind": "text",
+      "max_length": 20,
+      "selector": {
+        "auto_id": "presetName",
+        "control_type": "Edit"
+      }
+    }
+  ]
+}
