@@ -374,8 +374,19 @@ def _recipe_fallback(e: ErrorEvent) -> str:
     return "\n".join(lines)
 
 
-def differential(project: Project, a: AdapterSpec, b: AdapterSpec, n_cases: int = 20, seed: int = 1):
-    return _fn("diffrun", "differential")(project, a, b, n_cases=n_cases, seed=seed)
+def exe_factory(spec: AdapterSpec, exe_path: str) -> Callable[[], Any]:
+    """Adapter factory that launches a specific EXE (so two builds can be compared with one project)."""
+    def make():
+        ad = make_adapter(spec)
+        ad.attach(TargetRef(kind="exe", exe_path=exe_path))
+        return ad
+    return make
+
+
+def differential(project: Project, a: AdapterSpec, b: AdapterSpec, n_cases: int = 20, seed: int = 1,
+                 factory_a=None, factory_b=None):
+    return _fn("diffrun", "differential")(project, a, b, n_cases=n_cases, seed=seed,
+                                          factory_a=factory_a, factory_b=factory_b)
 
 
 def normalise_diff(rep) -> dict[str, list[str]]:

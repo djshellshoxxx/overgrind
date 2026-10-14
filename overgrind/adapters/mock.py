@@ -15,6 +15,7 @@ scheduler is not wanted (tests, `generator_factory="overgrind.adapters.mock:simp
 """
 from __future__ import annotations
 
+import struct
 import time
 import zlib
 from typing import Any, Iterator
@@ -24,6 +25,17 @@ from ..types import (
     Outcome, Project, Selector, TargetRef, Value,
 )
 
+def _png(w: int = 64, h: int = 48, rgb: tuple[int, int, int] = (235, 235, 240)) -> bytes:
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        c = struct.pack(">I", len(data)) + tag + data
+        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+_PNG = _png()
 _OFF = ("off", "false", "0", "none", "")
 
 
@@ -165,10 +177,8 @@ class MockAdapter:
 
     def screenshot(self, path: str) -> bool:
         try:
-            with open(path, "wb") as fh:   # 1x1 white PNG
-                fh.write(bytes.fromhex(
-                    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
-                    "0000000d4944415478da63f8ffff3f0005fe02fea7c4b4290000000049454e44ae426082"))
+            with open(path, "wb") as fh:
+                fh.write(_PNG)
             return True
         except OSError:
             return False

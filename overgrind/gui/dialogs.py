@@ -47,12 +47,15 @@ class SpecPicker(QGroupBox):
         if p:
             self.path.setText(p)
 
-    def spec(self) -> AdapterSpec:
+    def build(self) -> tuple[AdapterSpec, object]:
+        """(adapter spec, optional factory that launches this build's EXE)."""
         if self.kind.currentIndex() == 0:
-            return AdapterSpec("overgrind.adapters.mock:MockAdapter", dict(self.demo_kwargs))
-        if not self.path.text().strip():
+            return AdapterSpec("overgrind.adapters.mock:MockAdapter", dict(self.demo_kwargs)), None
+        exe = self.path.text().strip()
+        if not exe:
             raise ValueError("Choose the program file for this build.")
-        return AdapterSpec("overgrind.adapters.uia:UiaAdapter", {"exe_path": self.path.text().strip()})
+        spec = AdapterSpec("overgrind.adapters.uia:UiaAdapter")
+        return spec, backend.exe_factory(spec, exe)
 
 
 class CompareDialog(QDialog):
@@ -82,12 +85,12 @@ class CompareDialog(QDialog):
 
     def compare(self) -> None:
         try:
-            a, b = self.a.spec(), self.b.spec()
+            (a, fa), (b, fb) = self.a.build(), self.b.build()
         except ValueError as e:
             self.status.setText(str(e)); return
         self.go.setEnabled(False); self.status.setText("Comparing... both builds run one after the other.")
         proj, n = self.project, self.n.value()
-        run_async(lambda: backend.normalise_diff(backend.differential(proj, a, b, n_cases=n, seed=proj.run.seed)), self._done, self._fail)
+        run_async(lambda: backend.normalise_diff(backend.differential(proj, a, b, n_cases=n, seed=proj.run.seed, factory_a=fa, factory_b=fb)), self._done, self._fail)
 
     def _fail(self, msg: str) -> None:
         self.go.setEnabled(True); self.status.setText(f"The comparison could not run. {msg}")

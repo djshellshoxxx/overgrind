@@ -72,3 +72,4 @@ Plain, calm, second person. Short sentences. Say what happened, why, and what to
 ## Architecture notes
 `ProjectModel` (QObject) owns the Project, path, dirty flag and undo stack; every edit is `dataclasses.replace` through `ProjectModel.edit(label, fn)`. Pages observe `changed`. All long calls (scan, estimate, preview, preflight, reduce, differential, start/stop) run on `QThread` workers; the run page only polls `RunController.stats()` from a 400 ms `QTimer`. Backend access is centralised in `gui/backend.py` (lazy imports, tolerant result normalisation).
 Atlas data note: `RunStats.coverage` has no per-state counts, so cell counts are tallied from the polled action tail ("sampled"); totals and ring come from `Coverage`.
+Stop conditions are not a field of `Project`, so the GUI stores them as `run.strategy_options['stop']` (a `StopConditions` dict, saved with the project) and passes `stop=` to `RunController`.

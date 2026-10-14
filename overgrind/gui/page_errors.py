@@ -173,7 +173,7 @@ class ErrorsPage(PageBase):
     def _filter(self) -> None:
         self.proxy.category = self.cat.currentData() or ""
         self.proxy.text = self.search.text().strip().lower()
-        self.proxy.invalidateFilter()
+        self.proxy.invalidate()
 
     def _current_id(self) -> str:
         rows = self.view.selectionModel().selectedRows() if self.view.selectionModel() else []

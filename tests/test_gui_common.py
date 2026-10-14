@@ -41,11 +41,27 @@ class GuiCase(unittest.TestCase):
             raise unittest.SkipTest("PySide6 not available")
         cls.app = qapp()
 
+    def setUp(self):
+        # Never block on a modal prompt in tests: answer "Discard"/"Yes" and remember what was asked.
+        from PySide6.QtWidgets import QMessageBox
+        self._orig_q = QMessageBox.question
+        self.asked = []
+
+        def answer(parent, title, text, buttons=None, *a, **k):
+            self.asked.append(title)
+            B = QMessageBox.StandardButton
+            for pick in (B.Discard, B.Yes):
+                if buttons is None or buttons & pick:
+                    return pick
+            return B.Ok
+        QMessageBox.question = staticmethod(answer)
+
     def tearDown(self):
-        from PySide6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication, QMessageBox
         for w in QApplication.topLevelWidgets():
             try:
                 w.close()
             except Exception:
                 pass
         pump(timeout=0.05)
+        QMessageBox.question = self._orig_q

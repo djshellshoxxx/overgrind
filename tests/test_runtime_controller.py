@@ -308,3 +308,21 @@ class WorkerExecutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RealSchedulerIntegration(unittest.TestCase):
+    def test_default_generator_state_cover_completes_an_epoch(self):
+        p = make_project(n_features=3, run=RunConfig(capture_screenshot=False, settle_ms=0, restart_on_crash=True,
+                                                    strategy="state_cover", seed=3))
+        d = tempfile.mkdtemp(prefix="og-ev-")
+        c = RunController(p, mock_spec(bad_combo={"cb_a": "on", "cb_b": "on"}), d,
+                          stop=StopConditions(coverage_complete=True, max_seconds=20), checkpoint_interval_s=None)
+        c.start()
+        self.assertTrue(c.join(30))
+        st = c.stats()
+        self.assertEqual(st.stop_reason, "coverage_complete", st.stop_reason)
+        self.assertGreaterEqual(st.coverage.epochs, 1)
+        events = evidence.EvidenceStore(d).list()
+        self.assertEqual([e.category for e in events], ["crash"])
+        self.assertEqual(events[0].case.state["cb_a"], "on")
+        self.assertEqual(events[0].case.state["cb_b"], "on")

@@ -72,10 +72,12 @@ class RunLifecycle(GuiCase):
         # filter
         ep.cat.setCurrentIndex(ep.cat.findData("hang")); pump(timeout=0.1)
         self.assertEqual(ep.proxy.rowCount(), 0)
-        ep.cat.setCurrentIndex(0)
+        ep.cat.setCurrentIndex(0); pump(timeout=0.1)
+        ep.view.selectRow(0)
+        self.assertIsNotNone(ep.current())
         # reproduce & shrink (worker thread, original evidence untouched)
         ep._reduce()
-        self.assertTrue(pump(lambda: ep.status.text().startswith("Done") or "could not" in ep.status.text(), 90), ep.status.text())
+        self.assertTrue(pump(lambda: ep.status.text().startswith("Done") or "could not" in ep.status.text(), 60), ep.status.text())
         self.assertTrue(ep.status.text().startswith("Done"), ep.status.text())
         ev = ep.current()
         self.assertIsNotNone(ev.reduced)
@@ -86,14 +88,8 @@ class RunLifecycle(GuiCase):
         w = window()
         w.run_page.start()
         self.assertTrue(pump(lambda: w.session.state == "running", 20))
-        asked = []
-        orig = QMessageBox.question
-        QMessageBox.question = staticmethod(lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.Yes)
-        try:
-            w.close()
-        finally:
-            QMessageBox.question = orig
-        self.assertEqual(asked[0], "A test is running")
+        w.close()
+        self.assertEqual(self.asked[0], "A test is running")
         self.assertIn(w.session.state, ("idle", "finished"))
         self.assertIsNone(w.session.controller)
 
