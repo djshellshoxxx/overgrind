@@ -373,6 +373,7 @@ class Worker:
                 self.gen.feedback(case, out)
                 self.report(case, out)
                 self.recover(out)
+            hb.done.value = self.executed
             self.batch()
 
     def run_all(self) -> None:

@@ -82,6 +82,7 @@ class RunController:
         self._ckpt_pos = 0
         self._ckpt_dirty = False
         self._no_progress = 0
+        self._inc_counted = 0
         self._shot_dir = os.path.join(tempfile.gettempdir(), f"overgrind-shots-{self.run_id}")
         self._phash = _project_hash(project)
         if resume:
@@ -290,6 +291,7 @@ class RunController:
             known_signatures=tuple(self._known_signatures()))
         self._w = WorkerProcess(cfg)
         self._ckpt_pos = 0
+        self._inc_counted = 0
         if self._pause_flag:
             self._w.pause_ev.set()
         self._last_batch_t = time.monotonic()
@@ -329,6 +331,11 @@ class RunController:
         skip = max(0, w.hb.pos.value - self._ckpt_pos)
         cat = classify_wedge(self._target_pid, self._alive)
         recent = self._recent
+        extra = max(0, int(w.hb.done.value) - self._inc_counted)
+        with self._lock:
+            self._cases += extra
+        if extra:
+            self._no_progress = 0
         case = self._regenerate_case(skip)
         w.kill()
         if run.restart_on_crash and cat == "hang" and self._target_pid and self.project.target.kind == "exe":
@@ -393,6 +400,7 @@ class RunController:
         with self._lock:
             n = int(b.get("cases", 0))
             self._cases += n
+            self._inc_counted += n
             self._harness += int(b.get("harness", 0))
             self._restarts += int(b.get("restarts", 0))
             dt = now - self._last_batch_t

@@ -22,6 +22,7 @@ class Heartbeat:
     def __init__(self, ctx: Any) -> None:
         self.op_start = ctx.RawValue("d", 0.0)     # 0 = not inside an adapter operation
         self.case_start = ctx.RawValue("d", 0.0)   # 0 = between cases
+        self.done = ctx.RawValue("q", 0)           # cases executed this incarnation (credited on kill)
         self.pos = ctx.RawValue("q", 0)            # generator position (cases pulled) this incarnation
 
 
