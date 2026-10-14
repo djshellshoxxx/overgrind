@@ -1,5 +1,7 @@
 # Overgrind
 
+**Scope: General-purpose Windows desktop GUI software, regardless of application domain or UI framework (subject to accessible controls and automation constraints).** [Competitive differentiation and product scope](docs/strategy/windows-gui-fuzzing-differentiation.md).
+
 **Product direction:** [Continuous Standalone GUI Fuzzing v0.2 specification](docs/specs/continuous-gui-fuzzing-v0.2.md). The goal is an independent Windows GUI application allowing users to select a target, define each feature's default state, limit control ranges, run indefinitely by default, and persist only errors. **This is planned, not yet available.** The current v0.1 CLI remains a finite ordered-pair prototype.
 
 Overgrind is an extensible, deterministic **GUI feature-combination fuzzing and stress-test runner**. It inventories exposed controls, models each control's permitted input domain, and tests every *ordered* pair of main application features with randomized values.
