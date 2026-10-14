@@ -79,7 +79,11 @@ Review cases and selectors first. Execute against an application you control, pr
 
 A run deliberately requires **--execute**. Each case is written as one JSON Lines record with case index, seed, ordered pair, exact sampled inputs, elapsed time, status, and error. Output files are create-only: existing evidence is never overwritten. Use --stop-on-failure to end on the first error. Exit code 0 = all cases passed; 1 = some failed; 2 = config/runtime problem.
 
-Recreate the same plan with identical manifest, seed and sample count. For a recorded failure, retain its case index and input vector, along with the application build/version. A dedicated single-case replay command is a planned enhancement.
+To replay just case index 127 from a 100-samples-per-pair campaign:
+
+    python -m overgrind run --config examples/demo.json --samples 100 --seed 2048 --case-index 127 --report reports/replay-127.jsonl --execute
+
+Keep the same manifest, seed, samples, Python version, and application build. The runner executes only the selected case; its original index and exact sampled inputs are preserved. UI state, timing, and external effects may still differ.
 
 ## Architecture
 
@@ -99,7 +103,7 @@ New application adapters implement set_control(control, value), activate_feature
 
 The first version records UIA automation failures and a basic window-liveness check. It **does not yet** measure memory leaks, CPU, audio glitches, visual corruption, deadlocks with a hard execution deadline, app restarts, screenshot evidence, full GUI discovery across tabs/dialogs, crash-dump signatures, coverage-guided mutation, shrinking, or native Windows integration tests. Some Windows GUI operations can block; per-case deadlines and process watchdogs are important follow-up work.
 
-Recommended next modules: case replay/minimization, resource/CPU/memory sampler, watchdog/restart, screenshots and crash dumps, UIA control inventory export-to-manifest with approval workflow, secondary-page discovery, dependency-aware constraints (e.g. one knob controls another), stateful sequence fuzzing, web/Qt/JUCE adapters, and a GUI reporting dashboard.
+Recommended next modules: failing-case minimization, resource/CPU/memory sampler, watchdog/restart, screenshots and crash dumps, UIA control inventory export-to-manifest with approval workflow, secondary-page discovery, dependency-aware constraints (e.g. one knob controls another), stateful sequence fuzzing, web/Qt/JUCE adapters, and a GUI reporting dashboard.
 
 ## Development
 
