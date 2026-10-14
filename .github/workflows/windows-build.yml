@@ -1,7 +1,8 @@
 name: Windows build
 
 on:
-  # push trigger re-enabled at integration milestones
+  push:
+    branches: ['claude/**', main]
   workflow_dispatch:
 
 jobs:
