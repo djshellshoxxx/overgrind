@@ -89,7 +89,7 @@ _PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"(?<![\w.])/(?:[\w.\-~+@%]+/)+"), "<dir>/"),                # posix dir part
     (re.compile(r"(?i)\b0x[0-9a-f]+\b"), "<hex>"),
     (re.compile(r"(?i)\b[0-9a-f]{8,}\b"), "<hex>"),
-    (re.compile(r"\d+(?:\.\d+)?"), "N"),
+    (re.compile(r"(?<![A-Za-z_])\d+(?:\.\d+)?"), "N"),
 )
 
 
@@ -150,7 +150,7 @@ def capture_env(exe_path: str = "", extra: dict[str, Any] | None = None) -> dict
 
 
 # ------------------------------------------------------------------ redaction
-_SECRET_NAME = re.compile(r"(?i)pass(word|wd)?|pwd|secret|token|api[_-]?key")
+_SECRET_NAME = re.compile(r"(?i)pass(word|wd)?|pwd|^pw$|secret|token|api[_-]?key")
 _SECRET_TEXT = re.compile(
     r"(?i)\b(pass(?:word|wd)?|pwd|secret|token|api[_-]?key)(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|\S+)")
 
@@ -363,6 +363,8 @@ class EvidenceStore:
         ent = idx.get(ev.signature)
         if ent:
             ev.count = max(ev.count, int(ent.get("count", 1)))
+        ev.attachments = {k: v for k, v in ev.attachments.items()
+                          if os.path.isabs(v) or (self.dir / v).exists()}
         red = path.with_suffix("") / "reduced.json"
         if red.is_file():
             try:

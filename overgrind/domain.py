@@ -180,7 +180,9 @@ def boundary_values(domain: Domain) -> list[Value]:
         return list(domain.options)
     if k == "text":
         ch, n = _alpha(domain)[0], _max_len(domain)
-        vals: list = ["", ch]
+        vals: list = [""]
+        if n >= 1:
+            vals.append(ch)
         if n >= 2:
             vals.append(ch * (n - 1))
         if n >= 1:

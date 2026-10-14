@@ -334,27 +334,34 @@ def _ledger_row(r) -> dict:
     }
 
 
-def suggest_dependencies(project: Project, spec: AdapterSpec | None = None) -> list[dict]:
-    """Normalised proposals: {constraint: ConstraintDef|None, text, confidence}."""
-    mod = _mod("infer")
-    f = None
-    for n in ("propose", "suggest", "infer_dependencies", "infer", "run"):
-        f = getattr(mod, n, None)
-        if callable(f):
-            break
-    if f is None:
-        raise BackendMissing("Dependency suggestions are not available.")
-    params = _inspect.signature(f).parameters
-    raw = f(project, spec) if len(params) > 1 and spec is not None else f(project)
-    out = []
-    for item in raw or []:
-        c = item if isinstance(item, ConstraintDef) else _get(item, "constraint", "rule", default=None)
-        text = str(_get(item, "text", "description", "explanation", "reason", default="")) if not isinstance(item, ConstraintDef) else ""
-        conf = _get(item, "confidence", default="") if not isinstance(item, ConstraintDef) else ""
-        out.append({"constraint": c if isinstance(c, ConstraintDef) else None,
-                    "text": text or (describe_constraint(c, project) if c is not None else str(item)),
-                    "confidence": str(conf)})
-    return out
+def suggest_dependencies(project: Project, spec: AdapterSpec | None) -> list[dict]:
+    """Observe the app (read-only probing, defaults restored) and return proposals:
+    {proposal, text, confidence, evidence}. Slow: call from a worker thread."""
+    infer = _mod("infer")
+    ad = make_adapter(spec)
+    try:
+        ad.attach(project.target)
+        present = {_sel_key(e.selector) for e in ad.inspect()}
+
+        def probe(adapter, proj):
+            now = {_sel_key(e.selector) for e in adapter.inspect()}
+            flags = {}
+            for x in list(proj.features) + list(proj.controls):
+                flags[x.id] = {"enabled": True, "visible": _sel_key(x.selector) in now or not now}
+            return flags
+        obs = infer.gather_observations(ad, project, probe)
+        props = infer.infer_dependencies(obs, project)
+    finally:
+        try:
+            ad.detach(False)
+        except Exception:
+            pass
+    return [{"proposal": p, "text": p.text or f"{p.kind}: {p.subject} {p.features}", "confidence": p.confidence,
+             "evidence": p.evidence} for p in props]
+
+
+def _sel_key(s: Selector) -> tuple:
+    return (s.auto_id, s.title, s.control_type, s.path, s.index)
 
 
 def describe_constraint(c: ConstraintDef, project: Project) -> str:
@@ -375,17 +382,11 @@ def reduce_event(project: Project, spec: AdapterSpec, event: ErrorEvent) -> Erro
 
 
 def export_recipe(event: ErrorEvent, project: Project | None = None) -> str:
-    for mod in ("reduce", "evidence"):
-        try:
-            f = _fn(mod, "export_recipe")
-        except BackendMissing:
-            continue
-        try:
-            n = len(_inspect.signature(f).parameters)
-        except (TypeError, ValueError):
-            n = 1
-        return str(f(event, project) if n > 1 and project is not None else f(event))
-    return _recipe_fallback(event)
+    try:
+        res = _fn("reduce", "export_recipe")(event)
+    except BackendMissing:
+        return _recipe_fallback(event)
+    return str(res[0] if isinstance(res, tuple) else res)
 
 
 def _recipe_fallback(e: ErrorEvent) -> str:
@@ -396,17 +397,20 @@ def _recipe_fallback(e: ErrorEvent) -> str:
     return "\n".join(lines)
 
 
-def differential(project: Project, a: AdapterSpec, b: AdapterSpec, **kw):
-    return _fn("diffrun", "differential")(project, a, b, **kw)
+def differential(project: Project, a: AdapterSpec, b: AdapterSpec, n_cases: int = 20, seed: int = 1):
+    return _fn("diffrun", "differential")(project, a, b, n_cases=n_cases, seed=seed)
 
 
-def normalise_diff(res) -> dict[str, list[str]]:
-    out = {}
-    for key, aliases in (("regressions", ("regressions", "regression")), ("fixes", ("fixes", "fixed", "improvements")),
-                         ("incomparable", ("incomparable", "cannot_compare", "uncomparable")), ("same", ("same", "unchanged", "equal"))):
-        v = _get(res, *aliases, default=[])
-        out[key] = [str(x) for x in (v if isinstance(v, (list, tuple, set)) else [v] if v else [])]
-    return out
+def normalise_diff(rep) -> dict[str, list[str]]:
+    def line(i) -> str:
+        tgt = f" '{i.target}'" if i.target else ""
+        return f"Case {i.case_seq}{tgt}: build A = {i.a!r}, build B = {i.b!r}. {i.detail}".strip()
+    return {
+        "regressions": [line(i) for i in rep.regressions], "fixes": [line(i) for i in rep.fixes],
+        "mismatches": [line(i) for i in rep.mismatches], "incomparable": [line(i) for i in rep.incomparable],
+        "summary": f"{rep.n_cases} cases, {rep.compared} fully comparable and identical",
+        "markdown": rep.to_markdown(),
+    }
 
 
 # ------------------------------------------------------------------ processes / files
