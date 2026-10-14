@@ -35,10 +35,14 @@ def _id(value: Any) -> str:
 class FeatureSpec:
     id: str
     selector: dict[str, str]
+    mode: str = "invoke"
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "FeatureSpec":
-        return cls(id=_id(data.get("id")), selector=_selector(data.get("selector")))
+        mode = data.get("mode", "invoke")
+        if mode not in ("invoke", "enable"):
+            raise ValueError("feature mode must be invoke or enable")
+        return cls(id=_id(data.get("id")), selector=_selector(data.get("selector")), mode=mode)
 
 
 @dataclass(frozen=True)
