@@ -110,6 +110,12 @@ The first version records UIA automation failures and a basic window-liveness ch
 
 Recommended next modules: failing-case minimization, resource/CPU/memory sampler, watchdog/restart, screenshots and crash dumps, UIA control inventory export-to-manifest with approval workflow, secondary-page discovery, dependency-aware constraints (e.g. one knob controls another), stateful sequence fuzzing, web/Qt/JUCE adapters, and a GUI reporting dashboard.
 
+## Licence and wiki
+
+`pyproject.toml` declares the MIT licence, but this repository has no `LICENSE` file yet. Add one before relying on that declaration.
+
+Wiki source pages are in [docs/wiki/](docs/wiki/Home.md): user guide, developer guide, architecture rationale and codebase map.
+
 ## Development
 
     python -m unittest discover -s tests -v
