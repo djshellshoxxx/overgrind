@@ -104,6 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
     pf.add_argument("--in-process", action="store_true", help=argparse.SUPPRESS)
     pf.add_argument("--text", action="store_true", help="human-readable summary instead of JSON")
 
+    ex = sub.add_parser("export", help="export a (reduced) error as a GitHub-ready issue")
+    ex.add_argument("event_id")
+    ex.add_argument("--project", metavar="p.json")
+    ex.add_argument("--evidence", default="overgrind-evidence")
+    ex.add_argument("--format", choices=("md", "json"), default="md")
+
     er = sub.add_parser("errors", help="list/show persisted errors")
     es = er.add_subparsers(dest="what", required=True)
     for name in ("list", "show"):
@@ -172,7 +178,7 @@ def cmd_preflight(a: argparse.Namespace) -> int:
         print(rep.summary())
     else:
         _dump(rep.to_dict())
-    return 1 if rep.verdict == "fail" else 0
+    return 0 if rep.can_start else 1
 
 
 def cmd_errors(a: argparse.Namespace) -> int:
@@ -190,6 +196,19 @@ def cmd_errors(a: argparse.Namespace) -> int:
         raise UsageError(f"no such error {a.event_id!r}: {exc}") from exc
     _dump(evidence.event_to_dict(ev))
     return 1
+
+
+def cmd_export(a: argparse.Namespace) -> int:
+    from . import evidence
+    from .reduce import export_issue
+    p = _load(a.project) if a.project else None
+    store = evidence.EvidenceStore(a.evidence, sensitive=[c.id for c in p.controls if c.sensitive] if p else [])
+    try:
+        ev = store.load(a.event_id)
+    except (KeyError, OSError, ValueError) as exc:
+        raise UsageError(f"no such error {a.event_id!r}: {exc}") from exc
+    print(export_issue(ev, a.format, project=p))
+    return 0
 
 
 def cmd_reduce(a: argparse.Namespace) -> int:
@@ -246,7 +265,7 @@ def cmd_migrate(a: argparse.Namespace) -> int:
 
 
 COMMANDS = {"run": cmd_run, "preflight": cmd_preflight, "errors": cmd_errors, "reduce": cmd_reduce,
-            "diff": cmd_diff, "estimate": cmd_estimate, "preview": cmd_preview, "migrate": cmd_migrate}
+            "export": cmd_export, "diff": cmd_diff, "estimate": cmd_estimate, "preview": cmd_preview, "migrate": cmd_migrate}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -166,6 +166,7 @@ class FeaturesPage(PageBase):
         self.btn_suggest.setToolTip("Toggles features one at a time (and puts them back) to find rules you might have missed.")
         row.addWidget(self.btn_add); row.addWidget(self.btn_del); row.addStretch(1); row.addWidget(self.btn_suggest)
         self.body.addLayout(row)
+        self.add_responsive_box(row)
         self.sug_status = muted("")
         self.body.addWidget(self.sug_status)
 

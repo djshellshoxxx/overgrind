@@ -205,6 +205,11 @@ class Coverage:
                                          # only when the space has <= 4096 states, else ()
     visit_hist: tuple[int, ...] = ()     # histogram: [k] = number of valid states visited exactly k times (last bin = 8+);
                                          # sums to states_total (state_cover only)
+    # --- additive (R2 hardening, spec U1/B2): the "why not 100%" ledger; defaults mean none/unknown
+    unreachable: int = 0            # states/tuples whose application failed repeatedly; excluded from the denominator
+    failed_to_apply: int = 0        # cases whose application failed (harness) and were therefore not counted
+    unverified: int = 0             # visits counted at 'applied' level whose read-back did not match / was unavailable
+    why_not_complete: tuple[str, ...] = ()   # human-readable reasons coverage is below 100% (data, not marketing)
 
 @dataclass(frozen=True)
 class RunStats:

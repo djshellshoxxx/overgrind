@@ -7,7 +7,7 @@ import re
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
-    QFrame, QLabel, QScrollArea, QSizePolicy, QToolTip, QVBoxLayout, QWidget,
+    QBoxLayout, QComboBox, QFormLayout, QFrame, QLabel, QScrollArea, QSizePolicy, QToolTip, QVBoxLayout, QWidget,
 )
 
 from ..types import Coverage
@@ -94,6 +94,7 @@ class PageBase(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         outer.addWidget(scroll, 1); self.scroll = scroll
         # Optional footer that stays visible while the body scrolls (e.g. Plan's estimate and its action buttons).
+        self._rboxes: list = []; self._rgrids: list = []
         self.footer = QFrame(); self.footer.setObjectName("Footer"); self.footer.setVisible(False)
         self.footer_layout = QVBoxLayout(self.footer); self.footer_layout.setContentsMargins(16, 6, 16, 6); self.footer_layout.setSpacing(4)
         outer.addWidget(self.footer)
@@ -105,6 +106,50 @@ class PageBase(QWidget):
         self.hint_label.setTextFormat(Qt.TextFormat.RichText)
         self.body.addWidget(self.title_label); self.body.addWidget(self.hint_label)
         self.set_hint(self.hint)
+
+    # ---- font-robust layout: rows/grids that re-flow when the content would not fit the viewport
+    def add_responsive_box(self, lay) -> None:
+        self._rboxes.append(lay)
+
+    def add_responsive_grid(self, grid, widgets, max_cols: int) -> None:
+        self._rgrids.append([grid, list(widgets), max_cols, 0])
+
+    def finalize(self) -> None:
+        """Called once after construction: make every combo and form shrinkable, then fit rows to the width."""
+        for cb in self.findChildren(QComboBox):
+            cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            cb.setMinimumContentsLength(10)
+        for fl in self.findChildren(QFormLayout):
+            fl.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self._reflow()
+
+    def _reflow(self) -> None:
+        avail = max(200, self.scroll.viewport().width() - 40)
+        for lay in self._rboxes:
+            items = [lay.itemAt(i) for i in range(lay.count())]
+            need = sum(it.minimumSize().width() for it in items) + lay.spacing() * max(0, len(items) - 1)
+            want = QBoxLayout.Direction.TopToBottom if need > avail else QBoxLayout.Direction.LeftToRight
+            if lay.direction() != want:
+                lay.setDirection(want)
+        for g in self._rgrids:
+            grid, widgets, max_cols, cur = g
+            colw = max([w.minimumSizeHint().width() for w in widgets] + [1])
+            cols = max(1, min(max_cols, (avail + grid.horizontalSpacing()) // (colw + max(grid.horizontalSpacing(), 6))))
+            if cols != cur:
+                g[3] = cols
+                for w in widgets:
+                    grid.removeWidget(w)
+                for i, w in enumerate(widgets):
+                    grid.addWidget(w, i // cols, i % cols)
+                for c in range(max_cols):
+                    grid.setColumnStretch(c, 1 if c < cols else 0)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._reflow()
+
+    def minimumSizeHint(self) -> QSize:       # content scrolls; a page never dictates the window's minimum width
+        return QSize(300, 200)
 
     def show_below(self, widget: QWidget) -> None:
         """Scroll the body so `widget` (e.g. fresh results) is in view."""
@@ -388,6 +433,9 @@ class ElidedLabel(QLabel):
 
     def sizeHint(self) -> QSize:
         return QSize(120, super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:        # QLabel would report the width of the whole text
+        return QSize(0, super().minimumSizeHint().height())
 
 
 def fit_table(view, rows: int, min_rows: int = 3, max_rows: int = 8) -> None:

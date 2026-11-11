@@ -120,6 +120,7 @@ class MainWindow(QMainWindow):
         for p in self.pages:
             self.stack.addWidget(p)
             p.jump.connect(self.go_to)
+            p.finalize()
         self.run_page: RunPage = self.pages[5]; self.errors_page: ErrorsPage = self.pages[6]
         self.run_page.block_label.linkActivated.connect(lambda h: self.go_to(int(h)))
         right.addWidget(self.stack, 1)

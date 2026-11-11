@@ -54,7 +54,8 @@ def estimate(project: Project) -> dict[str, Any]:
     if project.run.strategy == "twise":              # additive keys (spec B2 section 4)
         try:
             g = strategy_class("twise")(project)
-            out.update(tway_t=g.t, tway_tuples=g.universe, mode=g.mode,
+            out.update(tway_t=g.t, tway_tuples=g.universe, mode=g.mode, buckets=g.plan.nb,
+                       solver_nodes=g.solver_nodes, mix=dict(g.mix),
                        tway_mem_mb=round(g.W / 8 / 2 ** 20, 3) if g.W else 0.0)
             out["text"] += f"; {g.t}-way: {g.universe:,} tuples ({g.mode} tracking)" if g.universe < 10 ** 15 \
                 else f"; {g.t}-way: {big_text(g.universe)} tuples ({g.mode} tracking)"
@@ -70,6 +71,9 @@ def ledger_snapshot(gen: CaseGenerator) -> dict[str, Any]:
     prog = getattr(gen, "progress", None)
     if callable(prog):
         snap["progress"] = prog()
+    led = getattr(gen, "ledger", None)
+    if callable(led):       # 'why not 100%' data: unvisited sample, unreachable, infeasible, failed-to-apply counts
+        snap["ledger"] = led()
     return snap
 
 

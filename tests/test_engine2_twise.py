@@ -122,7 +122,7 @@ class Infeasible(unittest.TestCase):
         run_to_first_sweep(g)
         pr = g.progress()
         self.assertEqual(g.sweeps_done, 1)
-        self.assertIn("1 infeasible tuple excluded", g.coverage().guarantee)
+        self.assertIn("1 proved infeasible", g.coverage().guarantee)
         self.assertTrue(g.progress()["infeasible_exact"])
 
     def test_no_invalid_state_and_mutex_triples(self):

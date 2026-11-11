@@ -78,6 +78,7 @@ class ControlsPage(PageBase):
         self.r_warn = QLabel(); self.r_warn.setWordWrap(True); rl.addWidget(self.r_warn)
         self.btn_orig = QPushButton("Use the original range"); rl.addWidget(self.btn_orig, 0, Qt.AlignmentFlag.AlignLeft)
         side.addWidget(orig, 1); side.addWidget(rest, 2)
+        self.add_responsive_box(side)
         ev.addLayout(side)
 
         more = QHBoxLayout()
@@ -96,6 +97,7 @@ class ControlsPage(PageBase):
         self.scope = QListWidget(); self.scope.setMaximumHeight(120); self.scope.setAccessibleName("Scope")
         sl.addWidget(self.scope); sl.addWidget(muted("Nothing ticked means it is changed at any time."))
         more.addWidget(gb, 1); more.addWidget(sc, 1)
+        self.add_responsive_box(more)
         ev.addLayout(more)
         self.body.addWidget(self.editor)
         self.body.addStretch(1)
@@ -113,6 +115,7 @@ class ControlsPage(PageBase):
         self.scope.itemChanged.connect(lambda *_: self._apply_scope())
         self._scope_sig: tuple = ()
         self.refresh()
+        self.finalize()
 
     # ---- helpers
     def current(self) -> ControlDef | None:

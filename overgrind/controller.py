@@ -53,6 +53,14 @@ def _project_hash(project: Project) -> str:
         return hashlib.sha256(repr(project).encode()).hexdigest()[:16]
 
 
+def _project_blockers(project: Project) -> list[str]:
+    try:
+        from . import project as proj_mod
+        return proj_mod.run_blockers(project)
+    except Exception:           # noqa: BLE001  the gate must never be the reason a run fails to start
+        return []
+
+
 class RunController:
     def __init__(self, project: Project, adapter_spec: AdapterSpec, evidence_dir: str | os.PathLike,
                  *, stop: StopConditions | None = None, resume: bool = False,
@@ -113,6 +121,9 @@ class RunController:
         self._cbs.append(cb)
 
     def start(self) -> None:
+        blockers = _project_blockers(self.project)
+        if blockers:
+            raise RuntimeError("; ".join(blockers))
         with self._lock:
             if self._thread is not None:
                 raise RuntimeError("RunController already started")
@@ -468,9 +479,13 @@ class RunController:
                 os.unlink(shot)
             except OSError:
                 pass
-        if written:
+        if written and self._cbs:
+            try:            # in-memory copies handed to the GUI are redacted exactly like the files on disk
+                shown = evidence.redact_event(event, self._sensitive)
+            except Exception:       # noqa: BLE001
+                shown = event
             for cb in list(self._cbs):
                 try:
-                    cb(event)
+                    cb(shown)
                 except Exception:
                     pass

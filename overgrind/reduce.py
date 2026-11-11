@@ -6,12 +6,13 @@ start from a clean reset). Originals are never mutated.
 from __future__ import annotations
 
 import copy
-import importlib
 import math
+import os
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Sequence
 
+from .registry import resolve_callable
 from .evidence import capture_env, classify, outcome_fingerprint, redact_reduced
 from .types import (
     Action, AdapterSpec, Case, ControlDef, ErrorEvent, HarnessError, Outcome, Project,
@@ -22,6 +23,10 @@ Runner = Callable[[list], Outcome]
 
 class BudgetExceeded(Exception):
     pass
+
+
+class Cancelled(BudgetExceeded):
+    """The caller's `cancel()` returned True; the last accepted candidate is still returned/saved."""
 
 
 # ------------------------------------------------------------------ reliability
@@ -116,8 +121,7 @@ class AdapterRunner:
         self._ctl = {c.id: c for c in project.controls}
 
     def _build(self) -> Any:
-        mod, _, attr = self.spec.factory.partition(":")
-        fac = getattr(importlib.import_module(mod), attr)
+        fac = resolve_callable(self.spec.factory)
         a = fac(**dict(self.spec.kwargs))
         a.attach(self.project.target)
         return a
@@ -252,7 +256,10 @@ class Reducer:
     def __init__(self, project: Project, adapter_spec: AdapterSpec | None = None,
                  runner: Runner | None = None, *, max_replays: int = 300,
                  max_seconds: float = 120.0, confirm_runs: int | None = None,
-                 store: Any = None, clock: Callable[[], float] = time.monotonic) -> None:
+                 store: Any = None, clock: Callable[[], float] = time.monotonic,
+                 cancel: Callable[[], bool] | None = None,
+                 on_progress: Callable[[dict[str, Any]], None] | None = None,
+                 final_confirm: int = 5) -> None:
         self.project, self.spec = project, adapter_spec
         self._own_runner = runner is None
         if runner is None:
@@ -263,6 +270,12 @@ class Reducer:
         self.max_replays, self.max_seconds = max_replays, max_seconds
         self.confirm_runs = confirm_runs if confirm_runs is not None else max(1, project.run.confirm_runs)
         self.store, self.clock = store, clock
+        self.cancel, self.on_progress, self.final_confirm = cancel, on_progress, final_confirm
+        try:
+            from .constraints import compile_constraints
+            self._ng = compile_constraints(project.features, project.constraints) if project.constraints else None
+        except Exception:                                   # noqa: BLE001
+            self._ng = None
         self._defaults = {c.id: c.default for c in project.controls}
         self._fdefault = {f.id: f.default_state for f in project.features}
         self._reset_budget()
@@ -276,6 +289,21 @@ class Reducer:
         self._best: list | None = None
         self._neg_retries = 0            # extra tries of a negative candidate (flaky targets)
         self._partial_reason = ""
+        self._accepted: list[list] = []
+        self._event: ErrorEvent | None = None
+        self._cancelled = False
+        self._unresolved = 0
+        self._orig_key: tuple = ()
+
+    def _progress(self, phase: str) -> None:
+        if self.on_progress is None:
+            return
+        try:
+            self.on_progress({"phase": phase, "replays": self.replays, "max_replays": self.max_replays,
+                              "steps": len(self._best) if self._best is not None else None,
+                              "elapsed_s": round(self.clock() - self._t0, 3)})
+        except Exception:                                   # noqa: BLE001  a GUI callback must not break reduction
+            pass
 
     def close(self) -> None:
         if self._own_runner and hasattr(self.runner, "close"):
@@ -289,13 +317,31 @@ class Reducer:
         return sig == self._target_sig or sig == self._baseline_sig
 
     def _replay(self, actions: list) -> Outcome:
+        if self.cancel is not None and self.cancel():
+            self._cancelled = True
+            raise Cancelled()
         if self.replays >= self.max_replays or self.clock() - self._t0 > self.max_seconds:
             raise BudgetExceeded()
         self.replays += 1
-        return self.runner(list(actions))
+        out = self.runner(list(actions))
+        self._progress("replay")
+        return out
+
+    def _valid(self, actions: list) -> bool:
+        """Candidates that violate a project constraint are UNRESOLVED (never accepted, never replayed)."""
+        if self._ng is None:
+            return True
+        assign = dict(self._fdefault)
+        for a in actions:
+            if a.kind == "state":
+                assign[a.target] = str(a.value)
+        return self._ng.is_valid(assign)
 
     def _test(self, actions: list) -> bool:
         key = tuple((a.kind, a.target, repr(a.value)) for a in actions)
+        if key not in self._cache and key != self._orig_key and not self._valid(actions):
+            self._unresolved += 1
+            self._cache[key] = False
         if key not in self._cache:
             res = self._same(self._replay(actions))
             tries = 0
@@ -347,6 +393,7 @@ class Reducer:
 
     def reduce(self, event: ErrorEvent) -> ErrorEvent:
         self._reset_budget()
+        self._event = event
         self._target_sig = event.signature
         full = list(event.history)
         unknown_pre = False
@@ -354,8 +401,10 @@ class Reducer:
             orig, unknown_pre = self._cut(full)
         else:
             orig = full = actions_from_case(self.project, event.case)
+        self._orig_key = tuple((a.kind, a.target, repr(a.value)) for a in orig)
         results: list[Outcome] = []
         exhausted = False
+        final = None
         steps = orig
         repro: list[bool] = []
         try:
@@ -371,6 +420,7 @@ class Reducer:
                     if need > 10:
                         self._partial_reason = "low reproduction rate: negative candidates were retried only 10 times"
                 steps = self._minimise(orig)
+                steps, final = self._final_confirm(steps, orig, reliability)
         except BudgetExceeded:
             exhausted = True
             repro = [self._same(o) for o in results]
@@ -382,6 +432,14 @@ class Reducer:
             reduced = redact_reduced(reduced, sens)
         if unknown_pre:
             reduced["assumes_unknown_prestate"] = True
+        if final is not None:
+            reduced["final_confirm"] = {"n": final[0], "r": final[1]}
+        if self._cancelled:
+            reduced["partial"], reduced["reason"] = True, "cancelled"
+        elif exhausted:
+            reduced["partial"], reduced["reason"] = True, "budget exhausted"
+        if self._unresolved:
+            reduced["unresolved_candidates"] = self._unresolved
         if self._partial_reason:
             reduced["partial"], reduced["reason"] = True, self._partial_reason
         new = copy.deepcopy(event)
@@ -408,6 +466,8 @@ class Reducer:
             ok = self._test(sub)
             if ok and len(sub) < len(self._best):
                 self._best = list(sub)
+                self._accepted.append(self._best)
+                self._save_partial()
             return ok
         steps = list(ddmin(list(orig), t))
         self._best = steps
@@ -461,6 +521,41 @@ class Reducer:
                     else:
                         lo = mid
         return steps
+
+    def _save_partial(self) -> None:
+        """Persist the last accepted candidate (atomic) so cancel/crash keeps real progress."""
+        self._progress("accepted")
+        if self.store is None or self._event is None or self._best is None:
+            return
+        try:
+            red = self._build_reduced(self._event, self._event.history or self._best, self._best,
+                                      "unconfirmed", [], True)
+            red["partial"], red["reason"] = True, "in progress"
+            self.store.write_reduced(self._event, red)
+        except Exception:                                   # noqa: BLE001  evidence I/O must not stop reduction
+            pass
+
+    def _final_confirm(self, steps: list, orig: list, reliability: str) -> tuple[list, tuple[int, int] | None]:
+        """Re-run the final candidate: reliable needs all of `final_confirm`, flaky 3 of 5. Fall back to the
+        previously accepted candidate (then the original) when it does not hold up (spec 3.2)."""
+        if self.final_confirm <= 0 or reliability not in ("reliable", "flaky") or steps == orig:
+            return steps, None
+        need = self.final_confirm if reliability == "reliable" else min(3, self.final_confirm)
+        n = self.final_confirm
+        cands = [steps] + [c for c in reversed(self._accepted[:-1])][:2] + [orig]
+        seen: list[list] = []
+        last = (0, 0)
+        for cand in cands:
+            if any(cand is x or cand == x for x in seen):
+                continue
+            seen.append(cand)
+            r = 0
+            for _ in range(n):
+                r += self._same(self._replay(cand))
+            last = (n, r)
+            if r >= need:
+                return list(cand), last
+        return list(orig), last
 
     def _build_reduced(self, event: ErrorEvent, orig: list, steps: list, reliability: str,
                        repro: list, exhausted: bool) -> dict[str, Any]:
@@ -531,3 +626,117 @@ def export_recipe(event: ErrorEvent) -> tuple[str, dict[str, Any]]:
     lines += ["", "## Expected / actual", "- Expected: the application keeps running and stays responsive.",
               f"- Actual: {event.category} - {event.message}", ""]
     return "\n".join(lines), data
+
+
+# ------------------------------------------------------------------ export_issue (spec U3 3.6)
+@dataclass(frozen=True)
+class ReduceOptions:
+    """Documented defaults of the spec (the Reducer keyword arguments are the same names)."""
+    replays: int = 5
+    max_replays: int = 400
+    max_seconds: float = 600.0
+    beta: float = 0.05
+    final_confirm: int = 5
+    restart_per_replay: bool = True
+
+
+def _norm_path(text: str) -> str:
+    """Strip user names from paths: C:\\Users\\bob\\x -> <user-profile>\\x ; /home/bob/x -> <home>/x."""
+    import re
+    text = re.sub(r"(?i)[A-Z]:\\Users\\[^\\\s]+", "<user-profile>", text)
+    return re.sub(r"/(?:home|Users)/[^/\s]+", "<home>", text)
+
+
+def _reliability_sentence(event: ErrorEvent) -> str:
+    rel = (event.env or {}).get("reliability") or {}
+    n, r = int(rel.get("n", 0)), int(rel.get("r", 0))
+    if not n:
+        c = (event.reduced or {}).get("confirm") or {}
+        n, r = int(c.get("runs", 0)), int(c.get("reproduced", 0))
+    if not n:
+        return "Reproduction not attempted; seen once."
+    if r == n and n >= 3:
+        return f"Reproduced {r}/{n} from a fresh launch (p >= {reproduce_lower_bound(r, n):.2f} at 95%)."
+    if r == 0:
+        return f"Not reproduced in {n} tries; seen once (true rate likely < {reproduce_upper_bound(0, n) * 100:.0f}%)."
+    lo, hi = reproduce_lower_bound(r, n, 0.025), reproduce_upper_bound(r, n, 0.025)
+    return f"Reproduced {r}/{n} ({100 * r / n:.0f}%, 95% CI {lo * 100:.0f}-{hi * 100:.0f}%)."
+
+
+def _words(step: dict, names: dict[str, str]) -> str:
+    k, t, v = step["kind"], step["target"], step.get("value")
+    nm = names.get(t, t)
+    return {"reset": "Reset the application to its defaults",
+            "state": f"Set feature '{nm}' = {v}",
+            "invoke": f"Invoke '{nm}'",
+            "control": f"Set control '{nm}' = {v!r}",
+            "wait": f"Wait for the UI to settle ({v} ms)",
+            "restart": "Restart the application"}.get(k, f"{k} {nm} {v!r}")
+
+
+def export_issue(event: ErrorEvent, fmt: str = "md", *, project: Project | None = None,
+                 sensitive: Any = ()) -> str:
+    """GitHub-ready Markdown or versioned JSON for one (ideally reduced) event. Sensitive values and user
+    paths are redacted; no screenshots/dumps are embedded."""
+    import json as _json
+    from . import __version__
+    from .evidence import redact_event
+    sens = set(sensitive) | ({c.id for c in project.controls if c.sensitive} if project else set())
+    ev = redact_event(event, sens)
+    names = {}
+    if project is not None:
+        names = {f.id: (f.name or f.id) for f in project.features}
+        names.update({c.id: c.id for c in project.controls})
+    red = ev.reduced
+    if red is None:
+        red = {"steps": [{"kind": a.kind, "target": a.target, "value": a.value} for a in ev.history],
+               "state": dict(ev.case.state), "values": dict(ev.case.values)}
+    steps = red.get("steps", [])
+    env = {k: (_norm_path(v) if isinstance(v, str) else v) for k, v in (ev.env or {}).items()}
+    exe = env.get("exe_path", "")
+    exe_base = os.path.basename(exe.replace("\\", "/")) if exe else ""
+    ctl = next((s_["target"] for s_ in reversed(steps) if s_["kind"] == "control"), "")
+    title = f"[{ev.category}] {ctl or (steps[-1]['target'] if steps else 'case')} -> {ev.signature[:8]}"
+    sentence = _reliability_sentence(ev)
+    orig_vals, red_vals = dict(ev.case.values), dict(red.get("values", {}))
+    fname = f"{ev.signature[:8]}.json"
+    doc = {
+        "format": "overgrind.issue", "version": 1, "title": title, "category": ev.category,
+        "signature": ev.signature, "message": _norm_path(ev.message), "reliability": ev.reliability,
+        "reliability_sentence": sentence, "reliability_stats": env.get("reliability"),
+        "environment": {"os": env.get("os"), "exe": exe_base, "exe_sha256": env.get("exe_sha256", ""),
+                        "overgrind": __version__,
+                        "project_hash": env.get("project_hash", ""), "seed": project.run.seed if project else None},
+        "case": {"seq": ev.case.seq, "state": ev.case.state, "values": orig_vals, "order": list(ev.case.order)},
+        "steps": steps, "values": {"original": orig_vals, "reduced": red_vals},
+        "selectors": ({f.id: _selector_dict(f.selector) for f in project.features if f.id in names}
+                      if project else {}),
+        "reduction": {k: red.get(k) for k in ("replays", "original_steps", "reduced_steps", "partial", "reason",
+                                              "final_confirm", "assumes_unknown_prestate") if k in red},
+        "attachments": sorted(ev.attachments),
+    }
+    if fmt == "json":
+        return _json.dumps(doc, indent=2, default=str, ensure_ascii=False)
+    if fmt not in ("md", "markdown"):
+        raise ValueError(f"unknown export format {fmt!r}")
+    L = [f"# {title}", "", f"**{sentence}**", "", "## Environment",
+         f"- OS: {env.get('os', '?')}",
+         f"- Target: `{exe_base or '?'}` SHA-256 `{env.get('exe_sha256') or 'unknown'}`",
+         f"- Overgrind: {__version__}",
+         f"- Project hash: `{env.get('project_hash') or 'n/a'}`", "",
+         f"## Steps to reproduce ({len(steps)} of {red.get('original_steps', len(steps))} recorded steps)"]
+    L += [f"{i}. {_words(s_, names)}" for i, s_ in enumerate(steps, 1)] or ["1. (no steps recorded)"]
+    keys = sorted(set(orig_vals) | set(red_vals))
+    if keys:
+        L += ["", "## Values", "| control | original | reduced |", "|---|---|---|"]
+        L += [f"| {k} | {orig_vals.get(k, '')!r} | {red_vals.get(k, '')!r} |" for k in keys]
+    L += ["", "## Expected / actual", "- Expected: the application keeps running and stays responsive.",
+          f"- Actual: {ev.category}: {_norm_path(ev.message)}", ""]
+    if ev.attachments:
+        L += ["## Attachments (not embedded)"] + [f"- {k}" for k in sorted(ev.attachments)] + [""]
+    L += ["## Reproduce", f"`overgrind repro {fname}`", f"_Signature `{ev.signature}`_", ""]
+    return "\n".join(L)
+
+
+def _selector_dict(sel: Any) -> dict[str, Any]:
+    return {k: (list(v) if isinstance(v, tuple) else v) for k, v in vars(sel).items() if v not in ("", (), None)}

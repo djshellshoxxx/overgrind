@@ -61,7 +61,15 @@ class MockAdapter:
     def __init__(self, crash_rate: float = 0.0, hang_rate: float = 0.0,
                  bad_combo: dict[str, str] | None = None, dialog_rate: float = 0.0,
                  harness_rate: float = 0.0, seed: int = 0, latency_ms: float = 0.0,
-                 wedge_rate: float = 0.0, fake_pid: int | None = None) -> None:
+                 wedge_rate: float = 0.0, fake_pid: int | None = None,
+                 enable_rules: dict[str, list[str]] | None = None,
+                 disable_when: dict[str, list[str]] | None = None,
+                 mutex_groups: list[list[str]] | None = None,
+                 requires_rules: dict[str, list[str]] | None = None,
+                 mutex_leak: float = 0.0, read_noise: float = 0.0, enable_delay_ms: float = 0.0,
+                 clamp: dict[str, tuple[float, float]] | None = None,
+                 ignore_writes: list[str] | None = None, forget_on_reset: list[str] | None = None,
+                 element_labels: dict[str, str] | None = None, password_controls: list[str] | None = None) -> None:
         self.crash_rate, self.hang_rate = float(crash_rate), float(hang_rate)
         self.dialog_rate, self.harness_rate = float(dialog_rate), float(harness_rate)
         self.wedge_rate = float(wedge_rate)
@@ -75,6 +83,22 @@ class MockAdapter:
         self._hung = ""
         self._modal = ""
         self._dirty = False
+        # --- additive planted behaviour for U2/U4 tests (all default off; nothing changes for old callers)
+        self.enable_rules = {k: list(v) for k, v in (enable_rules or {}).items()}      # control -> features ALL active
+        self.disable_when = {k: list(v) for k, v in (disable_when or {}).items()}      # control disabled when ANY active
+        self.mutex_groups = [list(g) for g in (mutex_groups or [])]
+        self.requires_rules = {k: list(v) for k, v in (requires_rules or {}).items()}
+        self.mutex_leak, self.read_noise, self.enable_delay_ms = float(mutex_leak), float(read_noise), float(enable_delay_ms)
+        self.clamp = {k: (float(a), float(b)) for k, (a, b) in (clamp or {}).items()}
+        self.ignore_writes, self.forget_on_reset = set(ignore_writes or ()), set(forget_on_reset or ())
+        self.element_labels = dict(element_labels or {})        # feature id -> label read by element_text()
+        self.password_controls = set(password_controls or ())
+        self.calls: list[tuple] = []                            # (op, target[, value]) log for tests
+        self._project: Project | None = None
+        self._vt = 0.0                                          # virtual ms advanced by wait_quiescent
+        self._hist: list[tuple[float, dict[str, str]]] = []
+        self._reads = 0
+        self._sets = 0
         self._rates = bool(self.crash_rate or self.hang_rate or self.dialog_rate or self.wedge_rate)
 
     # ------------------------------------------------------------ lifecycle
@@ -83,6 +107,7 @@ class MockAdapter:
         self._dead = self._hung = self._modal = ""
         self._states, self._values = {}, {}
         self._dirty = False
+        self._hist = []
 
     def detach(self, kill: bool = False) -> None:
         self._attached = False
@@ -134,10 +159,47 @@ class MockAdapter:
     # ------------------------------------------------------------ TargetAdapter
     def set_feature_state(self, feature: FeatureDef, state: str) -> None:
         self._op("state", feature.id, state)
+        self.calls.append(("state", feature.id, state))
+        if self.requires_rules or self.mutex_groups:
+            if not self._apply_state_rules(feature, state):
+                return
         self._states[feature.id] = state
+        self._snap()
         self._dirty = True
 
+    def _is_active(self, fid: str, states: dict[str, str] | None = None) -> bool:
+        st = self._states if states is None else states
+        f = next((x for x in (self._project.features if self._project else ()) if x.id == fid), None)
+        cur = st.get(fid, f.default_state if f else "off")
+        first = f.states[0] if f and f.states else "off"
+        return cur != first
+
+    def _apply_state_rules(self, feature: FeatureDef, state: str) -> bool:
+        """Planted requires/mutex behaviour (U4 tests). False = the write is ignored by the 'app'."""
+        active = state != (feature.states[0] if feature.states else "off")
+        if active:
+            for need in self.requires_rules.get(feature.id, ()):
+                if not self._is_active(need):
+                    return False
+            self._sets += 1
+            leak = self.mutex_leak and _u(self.seed, "leak", self._sets, feature.id) < self.mutex_leak
+            if not leak:
+                for grp in self.mutex_groups:
+                    if feature.id in grp:
+                        for other in grp:
+                            if other != feature.id and self._is_active(other):
+                                first = next((x.states[0] for x in self._project.features if x.id == other), "off") \
+                                    if self._project else "off"
+                                self._states[other] = first
+        return True
+
+    def _snap(self) -> None:
+        self._hist.append((self._vt, dict(self._states)))
+        if len(self._hist) > 64:
+            del self._hist[:-64]
+
     def invoke(self, feature: FeatureDef) -> None:
+        self.calls.append(("invoke", feature.id))
         self._op("invoke", feature.id)
         if feature.dangerous:
             raise HarnessError("mock: refusing to invoke a dangerous feature")
@@ -145,6 +207,12 @@ class MockAdapter:
 
     def set_control(self, control: ControlDef, value: Value) -> None:
         self._op("control", control.id, value)
+        self.calls.append(("control", control.id, value))
+        if control.id in self.ignore_writes:
+            return
+        if control.id in self.clamp and isinstance(value, (int, float)) and not isinstance(value, bool):
+            lo, hi = self.clamp[control.id]
+            value = type(value)(min(max(value, lo), hi)) if isinstance(value, int) else min(max(value, lo), hi)
         self._values[control.id] = value
         self._dirty = True
 
@@ -164,11 +232,17 @@ class MockAdapter:
         if self._dead or self._hung:
             raise HarnessError("mock: cannot reset a dead or hung target")
         self._modal = ""
+        self._project = project
+        self.calls.append(("reset", "*"))
+        keep = {k: self._values[k] for k in self.forget_on_reset if k in self._values}
         self._states = {f.id: f.default_state for f in project.features if f.kind != "action"}
         self._values = {c.id: c.default for c in project.controls}
+        self._values.update(keep)                  # planted bug: reset forgets these controls
+        self._snap()
         self._dirty = False
 
     def wait_quiescent(self, timeout_ms: int = 0) -> None:
+        self._vt += max(0, timeout_ms)
         if self._dirty or self._rates:
             self._evaluate(final=True)
             self._dirty = False
@@ -185,6 +259,50 @@ class MockAdapter:
         if self._modal:
             return Health("modal", self._modal)
         return Health("ok")
+
+    # ------------------------------------------------------------ optional protocol extensions (additive)
+    def _states_at(self, vt: float) -> dict[str, str]:
+        snap: dict[str, str] = {}
+        for t, st in self._hist:
+            if t <= vt:
+                snap = st
+        return snap
+
+    def _enabled_for(self, cid: str) -> bool:
+        states = self._states_at(self._vt - self.enable_delay_ms) if self.enable_delay_ms else self._states
+        if cid in self.enable_rules and not all(self._is_active(f, states) for f in self.enable_rules[cid]):
+            return False
+        if cid in self.disable_when and any(self._is_active(f, states) for f in self.disable_when[cid]):
+            return False
+        return True
+
+    def probe(self, selectors: dict[str, Selector]) -> dict[str, dict[str, bool]]:
+        """OPTIONAL: batched read-only element props {key: {exists, visible, enabled}} (spec U4 delta 3)."""
+        if not self._attached or self._dead:
+            raise HarnessError("mock: target not available")
+        by_aid = {c.selector.auto_id: c.id for c in (self._project.controls if self._project else ())}
+        out: dict[str, dict[str, bool]] = {}
+        for key, sel in selectors.items():
+            cid = by_aid.get(sel.auto_id, key)
+            en = self._enabled_for(cid)
+            if self.read_noise:
+                self._reads += 1
+                if _u(self.seed, "n", self._reads, key) < self.read_noise:
+                    en = not en
+            out[key] = {"exists": True, "visible": True, "enabled": en}
+        return out
+
+    def selector_enabled(self, selector: Selector) -> bool | None:
+        by_aid = {c.selector.auto_id: c.id for c in (self._project.controls if self._project else ())}
+        cid = by_aid.get(selector.auto_id)
+        return self._enabled_for(cid) if cid is not None else True
+
+    def element_text(self, selector: Selector) -> str:
+        """OPTIONAL (tripwire): current label of the element; tests plant label changes via element_labels."""
+        for f in (self._project.features if self._project else ()):
+            if f.selector == selector and f.id in self.element_labels:
+                return self.element_labels[f.id]
+        return selector.title or ""
 
     def screenshot(self, path: str) -> bool:
         try:

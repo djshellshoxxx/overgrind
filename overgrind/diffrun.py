@@ -8,6 +8,7 @@ from random import Random
 from typing import Any, Callable, Iterable
 
 from .evidence import classify
+from .registry import resolve_callable
 from .types import (
     AdapterSpec, Case, ControlDef, FeatureDef, HarnessError, Outcome, Project,
 )
@@ -122,8 +123,7 @@ def make_cases(project: Project, n: int, seed: int) -> list[Case]:
 
 # ------------------------------------------------------------------ execution
 def _build(spec: AdapterSpec, project: Project) -> Any:
-    mod, _, attr = spec.factory.partition(":")
-    a = getattr(importlib.import_module(mod), attr)(**dict(spec.kwargs))
+    a = resolve_callable(spec.factory)(**dict(spec.kwargs))
     a.attach(project.target)
     return a
 

@@ -65,6 +65,7 @@ class PlanPage(PageBase):
             grid.addWidget(c, i // 2, i % 2)
             c.radio.toggled.connect(lambda on, k=k: on and self._strategy(k))
         self.body.addLayout(grid)
+        self.add_responsive_grid(grid, list(self.cards.values()), 2)
 
 
         self.body.addWidget(QLabel("<b>2. How long should it run?</b>"))
@@ -159,6 +160,7 @@ class PlanPage(PageBase):
         self.btn_prev.clicked.connect(self._preview); self.btn_pre.clicked.connect(self.run_preflight)
         self.btn_reset.clicked.connect(self.model.reset_run)
         self.refresh()
+        self.finalize()
 
     @staticmethod
     def _table_style(t: QTableWidget, *stretch: int) -> None:

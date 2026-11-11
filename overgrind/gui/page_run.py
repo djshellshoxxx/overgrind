@@ -123,6 +123,7 @@ class RunPage(PageBase):
             grid.addWidget(t, i // 4, i % 4)
         self.t_harness.setToolTip("The test tool could not drive the app. This is not counted as an app bug.")
         self.body.addLayout(grid)
+        self.add_responsive_grid(grid, tiles, 4)
         self.current = muted("", wrap=True); self.body.addWidget(self.current)
 
         box = QGroupBox("Feature-State Atlas"); bl = QVBoxLayout(box)
@@ -162,6 +163,7 @@ class RunPage(PageBase):
         self.on_state(self.session.state)
         self.model.preflightChanged.connect(self.refresh_blockers)
         self.refresh()
+        self.finalize()
 
     # ---- inputs
     def set_issues(self, issues) -> None:

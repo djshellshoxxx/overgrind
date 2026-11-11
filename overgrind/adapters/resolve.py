@@ -11,7 +11,7 @@ produces the human-readable stability explanation shown by the inspector / prefl
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Callable, Sequence
 
 from ..types import ElementInfo, Selector
 
@@ -26,6 +26,10 @@ class Resolution:
     candidates: tuple[int, ...] = ()     # remaining candidates when unresolved/ambiguous
     tried: tuple[tuple[str, int], ...] = ()   # (tier, matches within the pool)
     note: str = ""
+    healed: bool = False                 # additive (B1): resolved by similarity healing, not by a tier
+    score: float = 0.0                   # heal similarity (0 for tier resolutions)
+    margin: float = 0.0                  # heal margin to the runner-up
+    unhealable: bool = False             # healing was refused (below threshold / small margin)
 
     @property
     def found(self) -> bool:
@@ -151,3 +155,31 @@ def suggest_selector(element: ElementInfo, elements: Sequence[ElementInfo]) -> S
             if e.control_type == element.control_type and e.selector.class_name == s.class_name]
     idx = same.index(me) if me in same else s.index
     return Selector(class_name=s.class_name, control_type=element.control_type, index=idx)
+
+
+def resolve_heal(selector: Selector, elements: Sequence[ElementInfo], *, allow_heal: bool = True,
+                 threshold: float = 0.85, margin: float = 0.15,
+                 accept: "Callable[[ElementInfo], bool] | None" = None,
+                 taught: ElementInfo | None = None) -> Resolution:
+    """Tiered `resolve`; when that fails or is ambiguous, bounded similarity healing (spec B1 3.4).
+
+    Raises HarnessError when the target is ambiguous or cannot be healed with enough confidence; it
+    never guesses. A healed Resolution has `healed=True`, `score` and `margin`; the caller counts it,
+    surfaces it and emits a selector update proposal (selectors.propose_update). `accept` is the
+    owner-process filter (never heal into another process)."""
+    from .. import selectors as S
+    from ..types import HarnessError
+    res = resolve(selector, elements)
+    if res.found and not (res.ambiguous and selector.index is None):
+        return res
+    if res.ambiguous and selector.index is None and not allow_heal:
+        names = ", ".join(f"#{i}:{elements[i].name or elements[i].selector.auto_id!r}" for i in res.candidates[:8])
+        raise HarnessError(f"ambiguous selector: {len(res.candidates)} elements match ({names})")
+    if not allow_heal:
+        raise HarnessError("cannot resolve selector: " + res.note)
+    h = S.heal(taught if taught is not None else selector, elements, threshold=threshold, margin=margin,
+               accept=accept)
+    if not h.ok:
+        raise HarnessError(f"cannot resolve selector (not healed): {h.reason}")
+    return Resolution(h.index, "healed", res.ambiguous, (), res.tried,
+                      f"healed: {h.reason}", True, h.score, h.margin)

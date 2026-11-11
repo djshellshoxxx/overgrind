@@ -28,6 +28,7 @@ from typing import Any
 from .types import (
     Action, AdapterSpec, Case, ErrorEvent, Health, HarnessError, Outcome, Project,
 )
+import dataclasses
 
 OK = Outcome(ok=True)
 HARNESS_LIMIT = 20
@@ -166,6 +167,8 @@ class Worker:
             self.since_reset = 0
             self.need_reset = False
         self.since_reset += 1
+        self.applied_ok = False                     # True once every state/control write returned (spec U1 3.2)
+        self.rb_plan: list[tuple[Any, str]] = []    # (feature, intended state) eligible for read-back
         applied: set[str] = set()
         for fid in list(case.order) + list(case.state):
             if fid in applied:
@@ -182,6 +185,7 @@ class Worker:
             elif fid in case.state:
                 st = case.state[fid]
                 self.op("state", fid, st, a.set_feature_state, f, st)
+                self.rb_plan.append((f, st))
         for cid, val in case.values.items():
             c = self.ctrls.get(cid)
             if c is None or c.skip or c.read_only:
@@ -189,6 +193,7 @@ class Worker:
             if c.scope and not self.scope_ok(c, case):
                 continue
             self.op("control", cid, val, a.set_control, c, val)
+        self.applied_ok = True
         dwell = int(case.dwell_ms) + int(run.settle_ms)
         if dwell > 0:
             self.ring.push(Action("wait", "*", dwell, (time.monotonic() - self.t0) * 1000.0))
@@ -199,6 +204,29 @@ class Worker:
                     break
                 time.sleep(min(left, 0.05))
         self.op("wait", "quiesce", None, a.wait_quiescent, max(50, run.op_timeout_ms // 2))
+
+    def readback(self) -> dict[str, Any]:
+        """Evidence level of the case just executed (spec U1 3.2): ``applied`` always (we got here without a
+        harness error), ``verified`` only when EVERY applied feature could be read back and matched."""
+        det: dict[str, Any] = {"applied": True, "verified": False, "readback": 0, "features": len(self.rb_plan)}
+        getter = getattr(self.adapter, "get_feature_state", None)
+        if getter is None or not self.rb_plan:
+            return det
+        ok = n = 0
+        for f, want in self.rb_plan:
+            self.hb.op_start.value = time.monotonic()
+            try:
+                got = getter(f)
+            except Exception:
+                continue
+            finally:
+                self.hb.op_start.value = 0.0
+            n += 1
+            if str(got).strip().lower() == str(want).strip().lower():
+                ok += 1
+        det["readback"] = n
+        det["verified"] = n == len(self.rb_plan) and ok == n
+        return det
 
     def scope_ok(self, c: Any, case: Case) -> bool:
         """types.ControlDef.scope: every scope feature must be *active*, i.e. in a state other than its
@@ -363,12 +391,13 @@ class Worker:
                 self.consec_harness = 0
                 self.executed += 1
                 self.d_cases += 1
-                self.gen.feedback(case, OK)
+                self.gen.feedback(case, Outcome(ok=True, detail=self.readback()) if exc is None else OK)
             elif out.category == "harness":
                 self.consec_harness += 1
                 self.d_harness += 1
                 self.need_reset = True
-                self.gen.feedback(case, out)
+                # the state was NOT reached: the generator must not count it (spec U1 3.2) and re-queues it
+                self.gen.feedback(case, dataclasses.replace(out, detail={**out.detail, "applied": False}))
                 if self.consec_harness > limit:
                     self.last_batch = 0.0
                     raise _Stop("fatal", f"automation unusable: {self.consec_harness} consecutive "
@@ -377,7 +406,8 @@ class Worker:
                 self.consec_harness = 0
                 self.executed += 1
                 self.d_cases += 1
-                self.gen.feedback(case, out)
+                self.gen.feedback(case, dataclasses.replace(
+                    out, detail={**out.detail, "applied": bool(self.applied_ok), "verified": False}))
                 self.report(case, out)
                 self.recover(out)
             hb.done.value = self.executed

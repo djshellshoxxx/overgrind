@@ -119,15 +119,30 @@ class BaseGenerator:
 
     def checkpoint(self) -> dict[str, Any]:
         d = {"v": 1, "strategy": self.name, "seed": self.seed, "seq": self.seq}
+        ph = self._phash()
+        if ph:
+            d["phash"] = ph
         d.update(self._ck_extra())
         return d
 
     def restore(self, state: dict[str, Any]) -> None:
         if state.get("strategy") != self.name:
             raise ValueError(f"checkpoint is for strategy {state.get('strategy')!r}, not {self.name!r}")
+        ph = self._phash()
+        if state.get("phash") and ph and state["phash"] != ph:      # spec U1 3.3: a changed project invalidates the ledger
+            raise ValueError("checkpoint belongs to a different project (project hash changed); start a new ledger")
         self.seed = int(state.get("seed", self.seed))
         self.seq = int(state.get("seq", 0))
         self._ck_load(state)
+
+    def _phash(self) -> str:
+        if not hasattr(self, "_ph"):
+            try:
+                from ..project import project_hash
+                self._ph = project_hash(self.project)
+            except Exception:
+                self._ph = ""
+        return self._ph
 
     def _ck_extra(self) -> dict[str, Any]:
         return {}

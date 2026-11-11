@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from typing import Any
 
 from .types import FeatureDef, Project
 
@@ -141,3 +142,93 @@ def scan_project(project: Project, include_flagged: bool = False) -> list[tuple[
         if hit is not None:
             out.append((f.id, hit.tier, hit.reason()))
     return out
+
+
+# ------------------------------------------------------------------ element scan, tripwire, sensitivity
+def element_texts(e: Any) -> list[str]:
+    s = e.selector
+    return [t for t in (e.name, s.auto_id, s.title, *s.path[-1:]) if t]
+
+
+def scan_elements(elements: list) -> dict[int, Finding]:
+    """{index: finding} over inspected ElementInfo (name, AutomationId, parent title); context rule:
+    a control inside a block-titled dialog inherits at least `warn`."""
+    out: dict[int, Finding] = {}
+    for i, e in enumerate(elements):
+        f = classify_detail(*element_texts(e))
+        if f is None:
+            p = e.parent
+            while p is not None and f is None:
+                pf = classify_detail(elements[p].name)
+                if pf is not None and pf.tier == "block" and elements[p].control_type in ("Window", "Dialog", "Pane"):
+                    f = Finding("warn", pf.word, f"inside {elements[p].name!r}")
+                p = elements[p].parent
+        if f is not None:
+            out[i] = f
+    return out
+
+
+_PW = re.compile(r"(?i)\b(?:pass(?:word|wd)?|pwd|passphrase|pin|secret)\b")
+
+
+def is_password(e: Any) -> bool:
+    """UIA IsPassword is surfaced as pattern 'IsPassword'; otherwise a name/id heuristic."""
+    if "IsPassword" in tuple(getattr(e, "patterns", ())):
+        return True
+    return any(_PW.search(" ".join(_tokens(t))) for t in element_texts(e))
+
+
+class Tripwire:
+    """Runtime label watch (spec 3.3): the text read at teach time is remembered; if an element's
+    current text now matches a block word that was NOT in the taught text, the operation is skipped
+    with HarnessError (never a defect) and `danger_skips` counts it."""
+
+    def __init__(self, taught: dict[str, str] | None = None) -> None:
+        self.taught = dict(taught or {})
+        self.danger_skips = 0
+
+    def check(self, key: str, current: str) -> None:
+        now = classify_detail(current)
+        if now is None or now.tier not in ("block", "disruptive"):
+            return
+        was = classify_detail(self.taught.get(key, ""))
+        if was is not None and was.word == now.word:
+            return
+        self.danger_skips += 1
+        from .types import HarnessError
+        raise HarnessError(f"tripwire: label of {key!r} is now {current!r} ({now.reason()}); skipped")
+
+
+class GuardedAdapter:
+    """Wraps a TargetAdapter: before every invoke / set_feature_state it re-reads the element text via
+    the OPTIONAL adapter method `element_text(selector) -> str` and trips on a newly dangerous label.
+    Adapters without that method degrade to pass-through (documented warn in preflight)."""
+
+    def __init__(self, adapter: Any, project: Project) -> None:
+        self._a = adapter
+        taught = {}
+        for f in project.features:
+            taught[f.id] = " ".join(feature_texts(f))
+        self.tripwire = Tripwire(taught)
+        self._reader = getattr(adapter, "element_text", None)
+
+    def _guard(self, feature: FeatureDef) -> None:
+        if self._reader is None:
+            return
+        try:
+            txt = self._reader(feature.selector)
+        except Exception:                                   # noqa: BLE001  reading must not fail the op
+            return
+        if txt:
+            self.tripwire.check(feature.id, str(txt))
+
+    def invoke(self, feature: FeatureDef) -> None:
+        self._guard(feature)
+        self._a.invoke(feature)
+
+    def set_feature_state(self, feature: FeatureDef, state: str) -> None:
+        self._guard(feature)
+        self._a.set_feature_state(feature, state)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._a, name)

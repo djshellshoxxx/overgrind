@@ -269,6 +269,7 @@ class TargetPageInput(GuiCase):
         w.close()
 
 
+@unittest.skipUnless(gs.HAVE_QT, "PySide6 not available")
 class WindowsProcessList(unittest.TestCase):
     """The ctypes code only runs on Windows, so the filtering policy is a pure function and the
     ctypes declarations are checked structurally."""
@@ -299,6 +300,7 @@ class WindowsProcessList(unittest.TestCase):
                          "a failing EnumWindows must raise, not show demo windows as if they were real")
 
 
+@unittest.skipUnless(gs.HAVE_QT, "PySide6 not available")
 class PyInstallerFriendly(unittest.TestCase):
     def test_every_dynamically_imported_backend_module_is_statically_visible(self):
         src = open(os.path.join(GUI_DIR, "backend.py"), encoding="utf-8").read()
@@ -403,18 +405,30 @@ class AtlasRobustness(GuiCase):
 
 
 class WideFontLayout(GuiCase):
-    def test_no_horizontal_overflow_at_min_size_with_wide_fonts(self):
+    @staticmethod
+    def _families():
+        from PySide6.QtGui import QFontDatabase
+        have = set(QFontDatabase.families())
+        wanted = ["DejaVu Sans", "DejaVu Sans Mono", "Segoe UI", "Verdana", "Consolas", "Tahoma", "Courier New"]
+        found = [f for f in wanted if f in have]
+        return found[:4] or [QApplication.instance().font().family()]
+
+    def test_no_horizontal_overflow_and_small_min_width_with_wide_fonts(self):
         from PySide6.QtGui import QFont
         app = QApplication.instance()
         old = app.font()
         try:
-            for fam, pt in (("DejaVu Sans", 12), ("DejaVu Sans Mono", 11), ("Segoe UI", 9)):
-                app.setFont(QFont(fam, pt))
-                w = demo_window(); w.resize(900, 600)
-                for i in range(7):
-                    w.go_to(i); pump(timeout=0.1)
-                    self.assertEqual(w.pages[i].scroll.horizontalScrollBar().maximum(), 0, f"{fam} {pt}: overflow on page {i}")
-                w.close()
+            for fam in self._families():
+                for pt in (12, 14):
+                    app.setFont(QFont(fam, pt))
+                    w = MainWindow(); w.model.demo = True; w.model.adapter_spec = DEMO_ADAPTER
+                    w.model.load_project(demo_project()); w.resize(900, 600); w.show()
+                    w.model.set_target(dc.replace(w.model.project.target, process_name="x" * 400 + ".exe"))
+                    for i in range(7):
+                        w.go_to(i); pump(timeout=0.05)
+                        self.assertEqual(w.pages[i].scroll.horizontalScrollBar().maximum(), 0, f"{fam} {pt}: overflow on page {i}")
+                        self.assertLessEqual(w.minimumSizeHint().width(), 900, f"{fam} {pt}: window minimum width on page {i}")
+                    w.close()
         finally:
             app.setFont(old)
 

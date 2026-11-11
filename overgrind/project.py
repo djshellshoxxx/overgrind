@@ -168,7 +168,7 @@ def load(path: str | os.PathLike) -> Project:
         raise ValueError("project file must contain a JSON object")
     version = data.get("schema_version")
     if version == SCHEMA_VERSION:
-        return from_dict(Project, data)
+        return demote_stale(from_dict(Project, data), exe_hash(None))
     if version in (None, 1):
         p = migrate_v1({k: v for k, v in data.items() if k != "schema_version"})
         return dataclasses.replace(p, name=data["name"]) if data.get("name") else \
@@ -372,6 +372,9 @@ def validate(p: Project) -> list[str]:
                              f"with test data. This keyword check is a heuristic, not a guarantee")
     if not any(f.enabled for f in p.features):
         errs.append("no enabled features")
+    errs_u, warns_u = _ledger_problems(p)
+    errs += errs_u
+    warns += warns_u
 
     cids: set[str] = set()
     for c in p.controls:
@@ -530,3 +533,142 @@ def selector_fallbacks(s: Selector) -> list[Selector]:
             scored.append((-sc, order, c))
     scored.sort(key=lambda t: (t[0], t[1]))
     return [c for _, _, c in scored]
+
+
+# ---------------------------------------------------------------- trust ledger (spec U2 3.1)
+STALE_DAYS = 30
+CONFIDENCE_RANK = {"unknown": 0, "inferred": 1, "manual": 2, "verified": 3}
+
+
+def provenance_info(note: str) -> dict[str, str]:
+    """Parse 'ev:v1;k=v;...' into a dict ({} when the note is not an evidence trail)."""
+    if not note or not note.startswith("ev:"):
+        return {}
+    out: dict[str, str] = {}
+    for part in note.split(";")[1:]:
+        k, eq, v = part.partition("=")
+        if eq:
+            out[k.strip()] = v.strip()
+    return out
+
+
+def make_note(**kv: Any) -> str:
+    """Compact evidence trail, e.g. make_note(t='2026-10-14T10:00Z', n=3, build='1a2b3c4d')."""
+    return "ev:v1;" + ";".join(f"{k}={v}" for k, v in kv.items() if v not in (None, ""))
+
+
+def exe_hash(exe_path: str | None, project: Project | None = None) -> str:
+    """sha256[:8] of the target executable ('' when unknown/unreadable)."""
+    path = exe_path or (project.target.exe_path if project is not None else "")
+    if not path:
+        return ""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()[:8]
+    except OSError:
+        return ""
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime())
+
+
+def _age_days(stamp: str, now: float | None = None) -> float | None:
+    try:
+        t = time.mktime(time.strptime(stamp, "%Y-%m-%dT%H:%MZ")) - time.timezone
+    except (ValueError, OverflowError):
+        return None
+    return ((time.time() if now is None else now) - t) / 86400.0
+
+
+def _demote(prov: Provenance, build: str, now: float | None) -> Provenance:
+    if prov.confidence != "verified":
+        return prov
+    info = provenance_info(prov.note)
+    why = ""
+    if build and info.get("build") and info["build"] != build:
+        why = f"exe changed {info['build']}->{build}"
+    elif "t" in info and (_age_days(info["t"], now) or 0) > STALE_DAYS:
+        why = f"stale >{STALE_DAYS}d"
+    if not why:
+        return prov
+    return dataclasses.replace(prov, confidence="inferred", note=(prov.note + f";demoted={why}")[:400])
+
+
+def demote_stale(p: Project, build: str = "", now: float | None = None) -> Project:
+    """Exe-hash change or >30 days: every `verified` fact becomes `inferred` until re-verified."""
+    feats = tuple(dataclasses.replace(f, provenance=_demote(f.provenance, build, now)) for f in p.features)
+    ctrls = tuple(dataclasses.replace(c, provenance=_demote(c.provenance, build, now)) for c in p.controls)
+    if feats == p.features and ctrls == p.controls:
+        return p
+    return dataclasses.replace(p, features=feats, controls=ctrls)
+
+
+def demoted_ids(p: Project) -> list[str]:
+    return [x.id for x in (*p.features, *p.controls) if "demoted=" in x.provenance.note]
+
+
+def unknown_ids(p: Project) -> list[str]:
+    return [f.id for f in p.features if f.enabled and f.provenance.confidence == "unknown"] + \
+           [c.id for c in p.controls if not c.skip and c.provenance.confidence == "unknown"]
+
+
+def unknown_acknowledged(p: Project) -> bool:
+    """The 'I know' box lives in run.strategy_options['ack_unknown'] (no types.py change needed)."""
+    return bool(p.run.strategy_options.get("ack_unknown"))
+
+
+def acknowledge_unknown(p: Project, typed_name: str) -> Project:
+    """Record the acknowledgement; the user must type the project name (UX rule)."""
+    if typed_name.strip() != p.name:
+        raise ValueError("type the project name exactly to acknowledge unknown facts")
+    opts = dict(p.run.strategy_options)
+    opts["ack_unknown"] = True
+    return dataclasses.replace(p, run=dataclasses.replace(p.run, strategy_options=opts))
+
+
+def _ledger_problems(p: Project) -> tuple[list[str], list[str]]:
+    errs: list[str] = []
+    warns: list[str] = []
+    unk = unknown_ids(p)
+    if unk and not unknown_acknowledged(p):
+        errs.append(f"{len(unk)} enabled item(s) have unknown confidence ({', '.join(unk[:5])}"
+                    f"{'...' if len(unk) > 5 else ''}); run preflight or acknowledge them "
+                    f"(run.strategy_options.ack_unknown) before starting")
+    if p.run.invalid_values and any(c.provenance.confidence in ("manual", "inferred") for c in p.controls):
+        warns.append("warning: invalid_values is on but some control domains are not verified; "
+                     "out-of-range probes may hit values the app legitimately accepts")
+    dem = demoted_ids(p)
+    if dem:
+        warns.append(f"warning: {len(dem)} fact(s) demoted from verified (target build changed or stale): "
+                     f"re-run preflight")
+    return errs, warns
+
+
+def confidence_counts(p: Project) -> dict[str, float]:
+    """{'verified': n, ..., 'manual_share': fraction} for the ledger badge / the >30% manual rule."""
+    out: dict[str, float] = {"verified": 0, "inferred": 0, "manual": 0, "unknown": 0}
+    facts = [*p.features, *p.controls]
+    for x in facts:
+        out[x.provenance.confidence] = out.get(x.provenance.confidence, 0) + 1
+    out["manual_share"] = (out["manual"] / len(facts)) if facts else 0.0
+    return out
+
+
+def run_blockers(p: Project) -> list[str]:
+    """Reasons the run must not start yet: unknown-confidence facts and facts demoted by a build change,
+    both until acknowledged (type the project name) or re-verified by preflight + apply."""
+    if unknown_acknowledged(p):
+        return []
+    out = []
+    unk = unknown_ids(p)
+    if unk:
+        out.append(f"{len(unk)} item(s) have unknown confidence ({', '.join(unk[:4])}); run preflight or acknowledge")
+    dem = demoted_ids(p)
+    if dem:
+        out.append(f"{len(dem)} fact(s) were demoted because the target build changed ({', '.join(dem[:4])}); "
+                   f"re-run preflight or acknowledge")
+    return out
