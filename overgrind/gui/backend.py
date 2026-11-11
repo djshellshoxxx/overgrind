@@ -315,34 +315,118 @@ def run_preflight(project: Project, spec: AdapterSpec | None) -> list[dict]:
         if it.tier and st == "ok":
             msg += f" (found by {it.tier}, stability {it.score}/100)"
         rows.append({"element": f"{it.kind} {it.id}", "status": st if st in ("ok", "warn", "fail") else "warn",
-                     "message": msg, "hint": "; ".join(it.hints)})
+                     "message": msg, "hint": "; ".join(it.hints), "kind": it.kind, "id": it.id,
+                     "fixes": [fix_dict(fx) for fx in (getattr(it, "fixes", None) or [])]})
     return rows
 
 
-def suggest_dependencies(project: Project, spec: AdapterSpec | None) -> list[dict]:
+def fix_dict(fx) -> dict:
+    """A structured fix action (preflight.FixAction or dict) as plain data: {id, kind, target, value, label}."""
+    if isinstance(fx, dict):
+        d = dict(fx)
+    else:
+        d = {k: getattr(fx, k, None) for k in ("id", "kind", "target", "value", "label")}
+    d.setdefault("label", "")
+    return d
+
+
+FIX_WORDS = {
+    "mark_dangerous": "Mark as dangerous", "adopt_default": "Use the value we saw as the default",
+    "narrow_domain": "Narrow the range", "skip_control": "Skip this control", "set_run": "Change a plan setting",
+    "acknowledge": "I understand the risk", "set_selector": "Use the closest element",
+}
+
+
+def fix_button_text(fx: dict) -> str:
+    """Plain-words button caption for a fix action (the backend label is kept as the tooltip)."""
+    base = FIX_WORDS.get(fx.get("kind", ""), fx.get("label") or "Fix")
+    kind, v = fx.get("kind"), fx.get("value")
+    if kind == "narrow_domain" and isinstance(v, dict) and "minimum" in v and "maximum" in v:
+        return f"Narrow the range to {_num(v['minimum'])}..{_num(v['maximum'])}"
+    if kind == "set_run" and fx.get("label"):
+        return fx["label"][:1].upper() + fx["label"][1:]
+    return base
+
+
+def apply_fix(project: Project, fx: dict) -> Project:
+    """The project with one structured fix applied (pure; mirrors preflight.apply for a single accepted action)."""
+    kind, target, value = fx.get("kind"), fx.get("target"), fx.get("value")
+    if kind == "mark_dangerous":
+        return dc.replace(project, features=tuple(dc.replace(f, dangerous=True) if f.id == target else f for f in project.features))
+    if kind in ("adopt_default", "narrow_domain", "skip_control", "set_selector"):
+        out = []
+        for c in project.controls:
+            if c.id == target:
+                if kind == "adopt_default":
+                    c = dc.replace(c, default=value)
+                elif kind == "skip_control":
+                    c = dc.replace(c, skip=True)
+                elif kind == "narrow_domain":
+                    base = c.fuzz_domain or c.domain
+                    v = value or {}
+                    c = dc.replace(c, fuzz_domain=dc.replace(base, minimum=v.get("minimum", base.minimum), maximum=v.get("maximum", base.maximum)))
+                elif kind == "set_selector" and isinstance(value, dict):
+                    c = dc.replace(c, selector=_selector_from(value, c.selector))
+            out.append(c)
+        feats = project.features
+        if kind == "set_selector" and isinstance(value, dict):
+            feats = tuple(dc.replace(f, selector=_selector_from(value, f.selector)) if f.id == target else f for f in project.features)
+        return dc.replace(project, controls=tuple(out), features=feats)
+    if kind == "set_run" and target and hasattr(project.run, target):
+        return dc.replace(project, run=dc.replace(project.run, **{target: value}))
+    return project
+
+
+def _selector_from(d: dict, fallback: Selector) -> Selector:
+    names = {f.name for f in dc.fields(Selector)}
+    kw = {k: (tuple(v) if k == "path" and isinstance(v, list) else v) for k, v in d.items() if k in names}
+    return dc.replace(fallback, **kw) if kw else fallback
+
+
+def suggest_dependencies(project: Project, spec: AdapterSpec | None, rejected: dict | None = None, cancel=None,
+                         progress=None) -> list[dict]:
     """Observe the app (read-only probing, defaults restored) and return proposals:
-    {proposal, text, confidence, evidence}. Slow: call from a worker thread."""
+    {proposal, text, confidence, evidence, contradictions, q, impact, status, fingerprint}. Slow: worker thread only."""
     infer = _mod("infer")
     ad = make_adapter(spec)
     try:
         ad.attach(project.target)
-        present = {_sel_key(e.selector) for e in ad.inspect()}
-
-        def probe(adapter, proj):
-            now = {_sel_key(e.selector) for e in adapter.inspect()}
-            flags = {}
-            for x in list(proj.features) + list(proj.controls):
-                flags[x.id] = {"enabled": True, "visible": _sel_key(x.selector) in now or not now}
-            return flags
-        obs = infer.gather_observations(ad, project, probe)
-        props = infer.infer_dependencies(obs, project)
+        stat = getattr(infer, "infer_statistical", None)
+        if callable(stat):
+            kw = {}
+            params = _inspect.signature(stat).parameters
+            for k, v in (("rejected", rejected), ("cancel", cancel), ("progress", progress)):
+                if v is not None and k in params:
+                    kw[k] = v
+            props = stat(project, ad, **kw)
+        else:
+            props = _legacy_infer(infer, ad, project)
     finally:
         try:
             ad.detach(False)
         except Exception:
             pass
-    return [{"proposal": p, "text": p.text or f"{p.kind}: {p.subject} {p.features}", "confidence": p.confidence,
-             "evidence": p.evidence} for p in props]
+    return [proposal_row(p) for p in props]
+
+
+def proposal_row(p) -> dict:
+    return {"proposal": p, "text": p.text or f"{p.kind}: {p.subject} {p.features}", "confidence": p.confidence,
+            "evidence": p.evidence, "contradictions": getattr(p, "contradictions", 0), "q": getattr(p, "q", None),
+            "impact": dict(getattr(p, "impact", None) or {}), "status": getattr(p, "status", "pending"),
+            "fingerprint": getattr(p, "fingerprint", "")}
+
+
+def _legacy_infer(infer, ad, project):
+    present = {_sel_key(e.selector) for e in ad.inspect()}
+
+    def probe(adapter, proj):
+        now = {_sel_key(e.selector) for e in adapter.inspect()}
+        flags = {}
+        for x in list(proj.features) + list(proj.controls):
+            flags[x.id] = {"enabled": True, "visible": _sel_key(x.selector) in now or not now}
+        return flags
+    obs = infer.gather_observations(ad, project, probe)
+    return infer.infer_dependencies(obs, project)
 
 
 def _sel_key(s: Selector) -> tuple:
@@ -361,9 +445,70 @@ def describe_constraint(c: ConstraintDef, project: Project) -> str:
     return c.kind
 
 
-def reduce_event(project: Project, spec: AdapterSpec, event: ErrorEvent) -> ErrorEvent:
+def reduce_event(project: Project, spec: AdapterSpec, event: ErrorEvent, store=None, cancel=None, on_progress=None) -> ErrorEvent:
+    """Replay and shrink. Passes cancel/on_progress/store only when this build of Reducer accepts them."""
     R = _fn("reduce", "Reducer")
-    return R(project, spec).reduce(event)
+    params = _inspect.signature(R).parameters
+    kw = {k: v for k, v in (("store", store), ("cancel", cancel), ("on_progress", on_progress)) if v is not None and k in params}
+    red = R(project, spec, **kw)
+    try:
+        return red.reduce(event)
+    finally:
+        try:
+            red.close()
+        except Exception:
+            pass
+
+
+def reducer_supports_callbacks() -> bool:
+    try:
+        params = _inspect.signature(_fn("reduce", "Reducer")).parameters
+    except BackendMissing:
+        return False
+    return "cancel" in params and "on_progress" in params
+
+
+def export_issue_text(event: ErrorEvent, project: Project | None = None) -> str:
+    """Ready-to-paste issue: reduce.export_issue when this build has it, else the older recipe."""
+    try:
+        f = _fn("reduce", "export_issue")
+    except BackendMissing:
+        return export_recipe(event, project)
+    try:
+        return str(f(event, "md", project=project))
+    except Exception:
+        return export_recipe(event, project)
+
+
+def reliability_counts(event: ErrorEvent) -> tuple[int, int] | None:
+    """(reproduced k, runs n) from the event, or None when it was never replayed."""
+    env = event.env or {}
+    rel = env.get("reliability") if isinstance(env, dict) else None
+    if isinstance(rel, dict) and rel.get("n"):
+        return int(rel.get("r", 0)), int(rel["n"])
+    c = (event.reduced or {}).get("confirm") if event.reduced else None
+    if isinstance(c, dict) and c.get("runs"):
+        return int(c.get("reproduced", 0)), int(c["runs"])
+    return None
+
+
+def step_diff(original: list[tuple], reduced: list[tuple]) -> tuple[list[tuple[str, tuple]], list[tuple[str, tuple]]]:
+    """Side-by-side diff of two action lists (tuples). Returns (left, right) rows of (tag, item), tag in
+    'same' | 'removed' (left only) | 'gap' (blank on the right, aligned with a removed row)."""
+    import difflib
+    left: list[tuple[str, tuple]] = []
+    right: list[tuple[str, tuple]] = []
+    sm = difflib.SequenceMatcher(a=original, b=reduced, autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            for a, b in zip(original[i1:i2], reduced[j1:j2]):
+                left.append(("same", a)); right.append(("same", b))
+        else:
+            for a in original[i1:i2]:
+                left.append(("removed", a)); right.append(("gap", ()))
+            for b in reduced[j1:j2]:               # a changed value: shown on the right as changed
+                left.append(("gap", ())); right.append(("changed", b))
+    return left, right
 
 
 def export_recipe(event: ErrorEvent, project: Project | None = None) -> str:
@@ -549,3 +694,158 @@ def _list_windows_win32() -> list[dict]:  # pragma: no cover - Windows only
     if not user32.EnumWindows(cb_ref, 0):
         raise OSError(ctypes.get_last_error(), "Windows could not list the open windows")
     return sorted(out, key=lambda w: (w["process"].lower(), w["title"].lower()))
+
+
+# ------------------------------------------------------------------ coverage detail (Atlas)
+MAX_RANKED_STATES = 4096
+
+
+def state_rank_table(project: Project, n: int) -> list[dict[str, str]]:
+    """rank -> {feature id: state} for the first `n` valid states (scheduler.unrank_state). Raises BackendMissing/ValueError
+    when the space cannot be unranked. Pure CPU: call from a worker thread for large n."""
+    un = _fn("scheduler", "unrank_state")
+    return [dict(un(project, r)) for r in range(n)]
+
+
+def visits_from_ranks(table: list[dict[str, str]], counts, shown: set[tuple[str, str]] | None = None) -> dict[tuple[str, str], int]:
+    """Per (feature, state) visit totals from per-rank state counts."""
+    out: dict[tuple[str, str], int] = {}
+    for st, n in zip(table, counts):
+        if not n:
+            continue
+        for fid, s in st.items():
+            k = (fid, str(s))
+            if shown is None or k in shown:
+                out[k] = out.get(k, 0) + int(n)
+    return out
+
+
+def pair_coverage(table: list[dict[str, str]], counts, fids: list[str], states_of: dict[str, tuple[str, ...]]
+                  ) -> dict[tuple[str, str], tuple[int, int]]:
+    """For each feature pair (a, b) with a before b in `fids`: (covered, possible) value pairs, where 'possible' are
+    the pairs that occur in at least one valid state and 'covered' those seen in a visited state."""
+    poss: dict[tuple[str, str], set] = {}
+    seen: dict[tuple[str, str], set] = {}
+    for st, n in zip(table, list(counts) + [0] * (len(table) - len(counts))):
+        for i, a in enumerate(fids):
+            if a not in st:
+                continue
+            for b in fids[i + 1:]:
+                if b not in st:
+                    continue
+                v = (str(st[a]), str(st[b]))
+                poss.setdefault((a, b), set()).add(v)
+                if n:
+                    seen.setdefault((a, b), set()).add(v)
+    return {k: (len(seen.get(k, ())), len(p)) for k, p in poss.items()}
+
+
+def why_not_complete(cv) -> list[str]:
+    """Plain-words reasons the coverage is below 100%, from whatever the Coverage object provides (older builds: just the gap)."""
+    out = [str(x) for x in (getattr(cv, "why_not_complete", ()) or ())]
+    have = " ".join(out).lower()
+
+    def add(n, text, key):
+        if n and key not in have:
+            out.append(text.format(n=n))
+    total, seen = getattr(cv, "states_total", None), getattr(cv, "states_visited", 0)
+    if total and seen < total:
+        out.append(f"{total - seen:,} of {total:,} feature states have not been visited yet.")
+    elif total is None:
+        out.append("The number of feature states is too large to count, so a percentage cannot be given.")
+    add(getattr(cv, "unreachable", 0), "{n:,} state(s) could not be reached because setting them failed repeatedly; they are left out of the total.", "unreachable")
+    add(getattr(cv, "failed_to_apply", 0), "{n:,} test case(s) could not be applied to the app and were not counted.", "could not be applied")
+    add(getattr(cv, "unverified", 0), "{n:,} visit(s) were counted as 'applied' but the app's read-back did not confirm them.", "read-back")
+    add(getattr(cv, "infeasible", 0), "{n:,} combination(s) are impossible because of your rules and are not counted.", "impossible")
+    add(getattr(cv, "unknown", 0), "{n:,} combination(s) could not be proved possible or impossible and are still counted.", "could not be proved")
+    ev = getattr(cv, "evidence", "")
+    if ev in ("applied", "attempted"):
+        out.append("Visits were only attempted/applied, not read back from the app, so they are not proof the state was reached." if ev == "attempted"
+                   else "Visits were applied but not read back, so the app may not have shown that state.")
+    return out
+
+
+# ------------------------------------------------------------------ picking on screen / overlays
+def overlay_supported() -> tuple[bool, str]:
+    """(ok, why not). Click-through highlight windows and screen picking are Windows-only: elsewhere the buttons are
+    disabled with this sentence as their tooltip."""
+    if sys.platform != "win32":
+        return False, "Picking on screen and the highlight outline only work on Windows, where the program being tested runs."
+    return True, ""
+
+
+def hit_test(elements: list[ElementInfo], x: float, y: float) -> int | None:
+    """Index of the innermost (smallest-area) scanned element whose bounds contain the screen point, else None.
+    Works on the scan result, so it needs no extra access to the app."""
+    best, best_area = None, None
+    for i, e in enumerate(elements):
+        b = e.bounds
+        if not b or len(b) < 4:
+            continue
+        bx, by, bw, bh = b[:4]
+        if bw <= 0 or bh <= 0:
+            continue
+        if bx <= x < bx + bw and by <= y < by + bh:
+            area = bw * bh
+            if best_area is None or area <= best_area:
+                best, best_area = i, area
+    return best
+
+
+# ------------------------------------------------------------------ compare builds: control mapping review
+def map_controls(project: Project, elems_a: list[ElementInfo], elems_b: list[ElementInfo]) -> list[dict]:
+    """One row per control and feature of the project: how well its element in build A matches an element in build B.
+    {id, kind, name, a, b, score, status: mapped|review|unmatched, b_index}. Uses selectors.similarity when this build has it."""
+    sim = None
+    try:
+        sim = _fn("selectors", "similarity")
+    except BackendMissing:
+        pass
+    rows = []
+    for kind, items in (("feature", project.features), ("control", project.controls)):
+        for it in items:
+            sel = it.selector
+            a_el = next((e for e in elems_a if e.selector == sel), None)
+            src = a_el or sel
+            best, second, bi = 0.0, 0.0, None
+            for j, e in enumerate(elems_b):
+                if not sel.control_type or e.control_type == sel.control_type or (a_el and e.control_type == a_el.control_type):
+                    s = float(sim(src, e)) if sim else _local_similarity(sel, e)
+                    if s > best:
+                        best, second, bi = s, best, j
+                    elif s > second:
+                        second = s
+            status = "unmatched" if bi is None or best < 0.45 else ("mapped" if best >= 0.85 and best - second >= 0.15 else "review")
+            nm = getattr(it, "name", "") or it.id
+            rows.append({"id": it.id, "kind": kind, "name": nm, "a": describe_selector(sel),
+                         "b": (elems_b[bi].name or describe_selector(elems_b[bi].selector)) if bi is not None else "",
+                         "b_id": elems_b[bi].selector.auto_id if bi is not None else "",
+                         "score": round(best, 2), "status": status, "b_index": bi})
+    return rows
+
+
+def _local_similarity(s: Selector, e: ElementInfo) -> float:
+    import difflib
+    t = e.selector
+    parts = []
+    if s.auto_id or t.auto_id:
+        parts.append(1.0 if s.auto_id == t.auto_id else difflib.SequenceMatcher(None, s.auto_id, t.auto_id).ratio() * 0.8)
+    if s.title or t.title or e.name:
+        parts.append(difflib.SequenceMatcher(None, s.title.lower(), (t.title or e.name).lower()).ratio())
+    parts.append(1.0 if s.control_type == t.control_type else 0.0)
+    return sum(parts) / len(parts)
+
+
+def id_map_from_review(rows: list[dict], decisions: dict[str, str]) -> dict[str, str | None]:
+    """A-id -> B-id for diffrun's id_map. decisions[id] in {'accept', 'ignore', 'override:<b id>'}; undecided 'mapped' rows
+    are accepted, undecided 'review'/'unmatched' rows are ignored (never guess)."""
+    out: dict[str, str | None] = {}
+    for r in rows:
+        d = decisions.get(r["id"]) or ("accept" if r["status"] == "mapped" else "ignore")
+        if d == "accept":
+            out[r["id"]] = r["b_id"] or r["id"] if r["b_index"] is not None else None
+        elif d.startswith("override:"):
+            out[r["id"]] = d.split(":", 1)[1] or None
+        else:
+            out[r["id"]] = None
+    return out

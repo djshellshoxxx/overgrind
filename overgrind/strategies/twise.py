@@ -411,6 +411,7 @@ class Generator(BaseGenerator):
 
     def _pick_seed(self, rng):
         sp = self.space
+        rolled = 0
         while True:
             if self._perm is None or self._perm_sweep != self.sweep:
                 self._perm = KeyedPermutation(self.W, derive_seed(self.seed, self.sweep, 0x7157))
@@ -423,6 +424,9 @@ class Generator(BaseGenerator):
                 if self.cursor >= self.W or (self.scan_complete and self.covered >= self._target()):
                     if self.unk and self._retry_unknown():
                         continue
+                    rolled += 1
+                    if rolled > 2:                          # nothing seedable (everything unreachable/undecided)
+                        return (), 0, None
                     self.full_passes += int(self.unk_n == 0 and not self.unreach and self.scan_complete
                                             and all(g.unknown == 0 for g in self.groups))
                     self.sweeps_done += 1

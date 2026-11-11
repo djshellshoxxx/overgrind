@@ -13,6 +13,8 @@ Outcome without these keys is treated as applied.
 """
 from __future__ import annotations
 
+import base64
+import zlib
 from array import array
 
 from ..states import derive_seed, pow2_text
@@ -87,6 +89,8 @@ class Generator(BaseGenerator):
             rng = (self.rng(ep, ix) if ix >= 0 else self.rng(ep, self.index, rank, 1)) if self.plan.n else None
             values = self.plan.sample_all(rng) if rng is not None else {}
             tags = (f"epoch:{ep + 1}",) if ix >= 0 else (f"epoch:{ep + 1}", "retry")
+            if self.visited_cnt == 0:
+                self.unverified_cnt = 0
             self.visited_cnt += 1
             self._inflight[self.seq] = (ep, rank, 1 if ix < 0 else 0)
             if len(self._inflight) > INFLIGHT:
@@ -94,7 +98,6 @@ class Generator(BaseGenerator):
             if self.visited_cnt >= self._target() and not self.retry:
                 self.index = 0
                 self.visited_cnt = 0
-                self.unverified_cnt = 0
                 self.epoch += 1
             return self.make_case(idx, values, tags=tags)
         rng = self.rng(self.sampled, 1)
@@ -119,7 +122,7 @@ class Generator(BaseGenerator):
         if det.get("applied", True) is not False:
             if det.get("verified") is True:
                 self.n_ver += 1
-            elif ep == self.epoch:
+            elif ep == self.epoch or (ep == self.epoch - 1 and self.visited_cnt == 0):
                 self.unverified_cnt += 1
             return
         # ---- application failed: not counted, re-queued, bounded budget
@@ -141,7 +144,7 @@ class Generator(BaseGenerator):
         if k >= MAX_FAILS:
             self.unreach.add(rank)
             if self.visited_cnt >= self._target() and not self.retry:   # excluded state may complete the epoch
-                self.index, self.visited_cnt, self.unverified_cnt = 0, 0, 0
+                self.index, self.visited_cnt = 0, 0
                 self.epoch += 1
         elif len(self.retry) < RETRY_CAP:
             self.retry.append(rank)
@@ -270,6 +273,8 @@ class Generator(BaseGenerator):
         return {"epoch": self.epoch, "index": self.index, "sampled": self.sampled, "visited": self.visited_cnt,
                 "unverified": self.unverified_cnt, "retry": list(self.retry),
                 "fails": [[r, k] for r, k in sorted(self.fails.items())], "unreach": sorted(self.unreach),
+                "counts": (base64.b64encode(zlib.compress(self._counts.tobytes(), 6)).decode("ascii")
+                           if self._counts is not None else ""),
                 "n_failed": self.n_failed, "n_fb": self.n_fb, "n_ver": self.n_ver, "rb": [self.rb_seen, self.rb_feats]}
 
     def _ck_load(self, st):
@@ -287,7 +292,9 @@ class Generator(BaseGenerator):
         self.rb_seen, self.rb_feats = (int(x) for x in st.get("rb", [0, 0]))
         self._inflight = {}
         self._perm = None
-        if self._counts is not None:           # derived state: every rank ep times, +1 for this epoch's prefix
+        if self._counts is not None and st.get("counts"):
+            self._counts = array("B", zlib.decompress(base64.b64decode(st["counts"])))
+        elif self._counts is not None:           # derived state: every rank ep times, +1 for this epoch's prefix
             ep, ix = self.epoch, self.index
             self._counts = array("B", bytes([min(ep, 255)]) * self.n)
             if ix:
