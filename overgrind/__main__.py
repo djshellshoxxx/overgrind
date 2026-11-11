@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if raw[:1] == ["v2"]:
+        from .cli2 import main as v2_main
+        return v2_main(raw[1:])
     args = build_parser().parse_args(argv)
     try:
         if args.command == "inspect":

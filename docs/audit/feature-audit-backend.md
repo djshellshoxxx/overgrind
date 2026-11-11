@@ -1,0 +1,63 @@
+# Backend feature audit (QA-BACKEND, v0.2)
+
+Method: each row was checked by running code (probe scripts and the tests named), not by reading names.
+"Test" = file in `tests/`; "probe" = ad-hoc run, result quoted, not (yet) a unit test.
+Windows-only behaviour (UIA, procwatch, real targets) is NOT verified here (Linux container).
+
+## 1. Acceptance P0 / P1
+
+| Item | Status | Evidence |
+|---|---|---|
+| P0-01 attach to process/EXE, no Python | Partial | `adapters/uia.py` + `TargetRef`; packaging/Windows not verifiable here (CI owns) |
+| P0-02 pick features via inspection / manual | Implemented (backend) | `Mock.inspect`, `ElementInfo.suggested_*`, `project` model; GUI owns the pickers |
+| P0-03 save/load, invalid rejected before run | Implemented | `project.validate/save/load`; test_project, test_project_qa (RunConfig, regex, BOM, retry) |
+| P0-04 unbounded default, timed stop, pause/stop responsive | Implemented | test_runtime_controller (timed, pause excludes time, wedge stop); probe: stop from paused 0.04 s, from wedge 0.003 s |
+| P0-05 select features/controls, prerequisites, block impossible | Implemented | `constraints.py`, `ControlDef.scope`; test_engine2_states; test_runtime_qa.WorkerScopeSemantics (bug fixed) |
+| P0-06 all valid finite states, shuffled | Implemented | `state_cover` + `KeyedPermutation`; test_engine2_states; test_engine2_qa.TwentyToggles (2^20 now enumerable; budget was 1e6) |
+| P0-07 bounded memory, no success records | Implemented | test_engine2_strategies.test_million_cases_bounded_memory; test_runtime_e2e.LongCrashInjection (20 s, RSS delta bounded) |
+| P0-08 errors only, enough to reproduce | Implemented | `EvidenceStore`; test_runtime_e2e (1 incident file, screenshot, no per-case files) |
+| P0-09 app failure vs automation error | Implemented / Partial | `evidence.classify`, `worker.judge`; explicit assertion oracle API absent (`TargetFailure("assertion")` only) |
+| P0-10 baseline reset, chaos mode | Implemented | `reset_policy`, strategies/chaos; test_runtime_controller.test_reset_policies, test_engine2_strategies.Chaos |
+| P0-11 v1 CLI + migration | Implemented | test_engine, test_project.Migration, `v2 migrate` (e2e) |
+| P1-01 restart, snapshots, dumps, dedup, minimise | Partial | restart/screenshot/dedup/ddmin yes; crash dumps (ProcDump/WER) missing |
+| P1-02 pairwise/3-wise + accounting | Implemented | `strategies/twise.py`; probe: 10x3,t=2 full in <=21 cases (bound 52); test_engine2_qa.TwiseSpecAcceptance |
+| P1-03 resource trends / leak oracles | Missing | none |
+| P1-04 one-click repro, reduced export, confirm after restart | Partial | `Reducer` (restart per replay via AdapterRunner), `export_recipe` md/json; no `export_issue`, no CLI export |
+| P1-05 custom-control bridges | Missing | only the `TargetAdapter` protocol |
+| P1-06 event order/timing/resize/focus/modal | Partial | chaos order+dwell+reset; no resize/focus/modal-hold ops |
+
+## 2. Features (acceptance numbers from each spec)
+
+### U1 Atlas: Partial (ledger counts + honest text; no applied/verified/unreachable accounting)
+Added this pass: `Coverage.infeasible/unknown/evidence/state_counts/visit_hist`, `scheduler.unrank_state`, `scheduler.ledger_snapshot`; default enumeration budget 2^22.
+1 covered: test_engine2_states.three_toggles/ten_toggles/permutations_of_8_vary | 2 covered: same | 3 covered: test_mutex_never_both_and_denominator | 4 covered (distinct): test_engine2_qa.TwentyToggles; tracemalloc <=200 KiB MISSING | 5 MISSING (harness-failed cases are still counted, no re-queue) | 6 MISSING (no applied/verified levels) | 7 partial: test_exact_infeasible_under_mutex (wording "N infeasible tuples excluded", not "proved infeasible") | 8 partial: test_sampled_mode_is_honest + phrase "NOT a complete-coverage claim" added | 9 MISSING (grammar fuzz) | 10 partial: test_deterministic_and_checkpoint_resume (100s of cases; Coverage equality via test_runtime_qa.CoverageCounts) | 11 controller only: test_runtime_controller.CheckpointTests (generator.restore itself does not check hash) | 12 MISSING (no `observe` API).
+
+### U2 Trust ledger / preflight / danger guard: Partial
+Implemented: `preflight.py` per-item checks (resolve, enabled, read-back of defaults, reset), `danger.py` (new), validate warning, preflight danger check (block tier = fail), project validation gates. Not the P01-P14 report model (`can_start`, budget, exe-hash demotion, `ack_unknown`, tripwire).
+1 MISSING (no write-ignoring-control P06; only default write read-back, test_readback_mismatch_is_reported covers clamp) | 2 MISSING (no proposed narrowed domain) | 3 MISSING (reset residue not checked per control) | 4 partial: test_wrong_selector_fails_with_copy_pastable_hint, test_runtime_resolve ambiguous | 5 covered: test_project_qa.DangerGuard (lexicon, camel/snake, 1,000 benign words) | 6 MISSING (tripwire) | 7 covered: test_runtime_cli_preflight.test_clean_project_is_ok_and_never_touches_dangerous (actions never invoked) | 8 partial (reset in `finally` now; test MISSING) | 9 MISSING | 10 MISSING (`IsPassword` in uia.py is other agent's) ; redaction side covered: test_runtime_qa.SensitiveNeverReachesDisk | 11 MISSING (preflight has a hard timeout only) | 12 MISSING.
+
+### U3 Auto-reduce: Partial (ddmin + value bisect + reliability stats; no flaky final-confirm, no UNRESOLVED constraint check, no export_issue)
+1 covered by probe (12 feats/20 ctrls -> {F0=on,C0=0}, 34 replays<=150) ; unit-level equivalent test_diag_reduce.test_value_and_state_shrink | 2 covered: test_two_step_interaction | 3 partial: classify rules per spec in test_diag_qa.ReliabilityPolicy (200-trial statistic MISSING) | 4 partial: negative retries implemented (cap 10), call-count assertion MISSING | 5 covered: test_diag_qa.ThresholdShrink (37; 17 probes, spec <=12; text shrink only halving) | 6 MISSING (mutex-invalid candidates not rejected) | 7 covered: test_diag_reduce.TestOriginalUntouched (atomic kill-mid-write MISSING) | 8 covered: test_budget | 9 MISSING | 10 partial: test_diag_reduce.TestExport (no SHA-256 line, sensitive grep done for store) | 11 partial (deterministic by construction, no test) | 12 partial (budget only; no cancel hook).
+
+### U4 Dependency inference: Partial (OFAT/pair observation, no statistics)
+1 MISSING (needs Mock planted rules) | 2 MISSING (no FDR) | 3 MISSING | 4 MISSING | 5 partial (min_verified=3, not 10/side) | 6 MISSING | 7 covered: test_gather_restores_defaults (dangerous excluded by construction) | 8 covered (restore in finally; exception/cancel test MISSING) | 9 covered: test_apply_is_immutable_and_scoped | 10 MISSING | 11 MISSING | 12 covered by construction (pure `infer_dependencies`; test_scope_verified_and_inferred).
+Known semantic gap: `infer` treats "active" as "differs from default_state", constraints/worker treat it as "not states[0]"; identical only for default-off features.
+
+### U5 Differential: Partial (sequential A then B, explicit `id_map`, readback/timing/outcome diff; no fuzzy mapping, A/A calibration, confirmation)
+1 MISSING (no fuzzy control mapping) | 2 MISSING | 3 partial: test_incomparable_missing_control | 4 partial: test_regression_and_fix (not reduced via U3) | 5 covered: test_value_mismatch_tolerance | 6 MISSING | 7 MISSING (fixed 3x ratio, no Wilcoxon) | 8 covered: tolerance (probe 0.1+0.2~0.3) | 9 MISSING (A then B, no ABBA) | 10 MISSING | 11 covered by probe (Mock A vs A, 300 cases: clean) | 12 covered by construction (nothing written).
+
+### B1 Selectors: Partial (`adapters/resolve.py` + `project.selector_score`; no `selectors.py`, no similarity healing/margin rule)
+1 partial (numeric 0-100, no A-D grades): test_project.SelectorScore | 2 partial (reason+hint strings) | 3 covered: test_generated_ids_penalized | 4 partial: test_heals_when_auto_id_changed (tier fallback, no 0.85/0.15) | 5 MISSING (ambiguous is unresolved, but no heal scoring) | 6 covered now: test_engine2_qa.ResolverTypeSafety (fixed: same id with other control type was bound) | 7 N/A (single-process snapshot) | 8 MISSING | 9 MISSING (resolve has no dangerous notion) | 10 covered: test_ambiguous_without_disambiguation_is_unresolved | 11 MISSING (no probe) | 12 covered in test_runtime_uia (other agent) | 13 probe only (scoring is O(1)/selector) | 14 N/A (module absent; resolve.py imports no pywinauto/Qt).
+
+### B2 Streaming t-wise: Implemented core, Partial vs spec
+1 covered: TwiseSpecAcceptance.test_pairwise_10x3_within_greedy_bound (8 seeds) | 2 covered: ..threeway_8x2.. | 3 covered: test_no_invalid_state_and_mutex_triples, test_exact_infeasible_under_mutex (10k-case property MISSING) | 4 MISSING (`solver_nodes` option absent; fixed budgets) | 5 MISSING | 6 covered: test_checkpoint_restores_bitset, _with_constraints_lazy (sidecar path N/A) | 7 MISSING | 8 partial: test_sampled_mode_is_honest (`tway_total` is the universe, not None) | 9 partial: test_never_stops_and_new_values (sweeps, no k=2 multiplicity, no 70/15/15 mix) | 10 MISSING (`feedback` ignores applied=False) | 11 probe: ~900 cases/s at n=20,v=3 (no test) | 12 MISSING (`strength_groups`) | 13 covered: TwiseSpecAcceptance.test_every_prefix_matches_brute_force_coverage.
+
+## 3. Skipped spec deltas (not cheap/sound now)
+U1: applied/verified levels via `Outcome.detail`, re-queue + `unreachable`, sidecar bitsets, Good-Turing sampled estimate. B2: `strength_groups`, `weights`, `seed_cases`, `mix`, k-multiplicity epochs, `solver_nodes`, un-covering on `applied=False`. U2: P01-P14 report/`can_start`, exe-hash demotion, `ack_unknown`, tripwire (`element_text`, `owner_pid`), `safe_to_probe`, provenance `evidence` fields. U3: `export_issue`, constraint-aware UNRESOLVED, final_confirm, sensitive-local repro files. U4/U5/B1: statistical inference, fuzzy mapping/A-A calibration/ABBA/Wilcoxon, `selectors.py` similarity healing. Done from deltas: `confirm_runs` default 3 (validated >=2), Coverage additive fields, reliability in `env["reliability"]`, `scheduler.estimate` twise keys.
+
+## 4. Code audit: bugs found and fixed (test first)
+1 `scheduler.estimate` OverflowError on huge spaces (float formatting of big ints). 2 domain: OverflowError in `contains/clamp` for tiny steps, int bounds > 2^53 on float domains drew out-of-range values. 3 **sensitive controls never redacted on disk** (controller built the store without them): case, history, index.json message, reduced.json, checkpoint.json (chaos/adaptive state). 4 index.json stored the UNredacted message. 5 literal sensitive values echoed in messages/env not scrubbed. 6 worker control-scope used an off-word list (Low/Mid/High scopes always "active"); diffrun same. 7 `cli2._load` aborted on warnings (a project with a dangerous-flagged feature could not run). 8 CLI crashed on non-ASCII output with a legacy Windows code page; project/v1 files with UTF-8 BOM unreadable; `--max-seconds nan/inf/<=0` accepted (run never ends). 9 `validate` ignored RunConfig/target entirely (unknown strategy, t=9, buckets=1e9 hang, nonpositive timeouts, bad regex). 10 `os.replace` PermissionError on Windows sharing violations (project.save, evidence writes): bounded retry. 11 crash between incident file and index.json produced duplicate incidents; now reconciled. 12 non-JSON values in evidence aborted the write. 13 `shrink_candidates` OverflowError for huge ints. 14 Reducer replayed the whole 200-action ring: prefix cut to last `reset`, `assumes_unknown_prestate`; reliability labels per spec (n>=3 / n>=5), extension rules, harness replays not counted; value bisection to the threshold. 15 resolver bound same AutomationId with a different control type. 16 state_cover default budget 1e6 < 2^20 made 20 toggles "not enumerable". 17 preflight aborted entirely when one adapter call raised; no baseline reset afterwards. 18 Windows test portability (`import resource`).
+Verified OK: PYTHONHASHSEED independence (0/1/4242, 6 strategies), checkpoint resume equality (all strategies), no zombie workers after stop/wedge (ps), stop latency, `-W error -X dev` clean for engine/domain/project/diag/controller/cli tests.
+
+## 5. Remaining known issues
+Mock PNG was already valid (Qt loads it; now 160x120 with frame, CRC-checked in test); if the GUI still fails, check its relative-attachment path resolution. Controller `on_error` callbacks run on the supervisor thread (a blocking callback stalls the run) and receive the UNredacted in-memory event. `_run_unique`/worker `known` grow with distinct signatures (no cap). Stateful strategies (chaos/adaptive) are not exactly reproduced after a watchdog respawn (skip-replay ignores feedback). Screenshots may show sensitive text (no masking). infer vs scope "active" semantics differ for default-on features.
