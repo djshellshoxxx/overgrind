@@ -13,7 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 windows = ["pywinauto>=0.6.8,<0.7"]
-gui = ["PySide6-Essentials>=6.6"]
+gui = ["PySide6-Essentials>=6.6,<6.12"]  # 6.12.0 leaks None refs on Python <3.12 (aborts the interpreter)
 build = ["pyinstaller>=6.0"]
 
 [project.scripts]

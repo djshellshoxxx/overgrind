@@ -10,5 +10,5 @@ Audits: `docs/audit/feature-audit-backend.md`, `feature-audit-gui.md`, `windows-
 - Never run on a real Windows desktop with a real target app: UIA adapter, ProcDump hook, PrintWindow screenshots, pick-on-screen overlay, process list.
 - Unimplemented spec items: sampled-mode confidence intervals and sidecar bitsets (U1/B2), preflight check P09, atomic kill-mid-write reducer test, assertion-oracle API, P1-05 framework bridges, image-based targeting, CI-agent mode.
 - Chaos/adaptive streams are not exactly reproduced after a watchdog respawn; screenshots are not masked for sensitive fields.
-- Ubuntu CI crashed once (native Qt abort in the Inspect page 5,000-element filter test); defensive fixes landed but are unconfirmed.
+- Ubuntu CI abort (`none_dealloc: deallocating None`) root-caused: PySide6 6.12.0 leaks `None` references on Python < 3.12 (QTreeWidgetItem.isHidden/setHidden/setToolTip/...). 6.8-6.11 are clean. `pyproject.toml` now pins `PySide6-Essentials>=6.6,<6.12`; verified all 92 GUI tests pass on Python 3.10 + PySide6 6.11.3. Re-check the next CI run.
 - Not code-signed; expect SmartScreen warnings.
