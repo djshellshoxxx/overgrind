@@ -162,8 +162,12 @@ class Badge(QWidget):
         label, icon, colour, tip = CONFIDENCE.get(level, CONFIDENCE["unknown"])
         self._apply(label, icon, colour, tip)
 
-    def set_reliability(self, level: str) -> None:
+    def set_reliability(self, level: str, counts: tuple[int, int] | None = None) -> None:
+        """Icon + word, plus 'k of n' when the failure was replayed n times and k of them failed again."""
         label, colour, tip = RELIABILITY.get(level, RELIABILITY["unconfirmed"])
+        if counts and counts[1]:
+            label = f"{label} ({counts[0]} of {counts[1]})"
+            tip = f"{tip} It failed again in {counts[0]} of {counts[1]} replays."
         self._apply(label, {"ok": "ok", "warn": "warn", "fail": "fail"}.get(colour, "unknown"), colour, tip)
 
     def _apply(self, label: str, icon: str, colour: str, tip: str) -> None:

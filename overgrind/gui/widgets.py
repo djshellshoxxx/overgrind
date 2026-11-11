@@ -405,6 +405,112 @@ class Atlas(QWidget):
                    fm.elidedText(legend, Qt.TextElideMode.ElideRight, max(10, self.width() - label_w)))
 
 
+class PairMatrix(QWidget):
+    """Pair-coverage matrix: for every two features, how many of their possible state pairs were seen. Each cell prints
+    'seen/possible' (never colour alone); rows and columns are numbered so long names stay readable."""
+    ROW_H = 28
+    MAX_FEATURES = 14
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._fids: list[str] = []
+        self._names: dict[str, str] = {}
+        self._cells: dict[tuple[str, str], tuple[int, int]] = {}
+        self._msg = "Pair coverage needs exact per-state counts from the run. They are available for up to 4,096 states."
+        self._hidden = 0
+        self.setMinimumHeight(80)
+        sp = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred); self.setSizePolicy(sp)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setAccessibleName("Pair coverage matrix")
+        self.setMouseTracking(True)
+
+    def set_data(self, fids, names: dict[str, str], cells: dict[tuple[str, str], tuple[int, int]]) -> None:
+        self._hidden = max(0, len(fids) - self.MAX_FEATURES)
+        self._fids = list(fids)[: self.MAX_FEATURES]
+        self._names = dict(names); self._cells = dict(cells)
+        done = sum(c for c, _ in cells.values()); tot = sum(t for _, t in cells.values())
+        self.setAccessibleDescription(f"{done} of {tot} feature-state pairs seen across {len(cells)} feature pairs." if tot else self._msg)
+        self.updateGeometry(); self.update()
+
+    def clear(self, msg: str | None = None) -> None:
+        self._fids = []; self._cells = {}
+        if msg:
+            self._msg = msg
+        self.setAccessibleDescription(self._msg)
+        self.updateGeometry(); self.update()
+
+    def has_data(self) -> bool:
+        return bool(self._cells)
+
+    def _label_w(self) -> int:
+        fm = QFontMetrics(self.font())
+        return min(220, max([fm.horizontalAdvance(f"{i + 1}. {self._names.get(f, f)}") for i, f in enumerate(self._fids)] + [40]) + 12)
+
+    def _cell_w(self) -> int:
+        fm = QFontMetrics(self.font())
+        return max(30, fm.horizontalAdvance("99/99") + 10)
+
+    def sizeHint(self) -> QSize:
+        n = len(self._fids)
+        return QSize(360, 12 + (n + 1) * self.ROW_H + (22 if self._hidden else 0)) if n else QSize(360, 90)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(120, self.sizeHint().height())
+
+    def _geom(self):
+        lw = self._label_w(); n = len(self._fids)
+        avail = max(60, self.width() - lw - 4)
+        cw = max(6, min(self._cell_w() + 14, avail // max(1, n)))
+        return lw, cw
+
+    def _cell_rect(self, i: int, j: int, lw: int, cw: int) -> QRectF:
+        return QRectF(lw + j * cw + 1, 4 + (i + 1) * self.ROW_H, cw - 2, self.ROW_H - 4)
+
+    def event(self, e) -> bool:
+        if e.type() == QEvent.Type.ToolTip and self._fids:
+            lw, cw = self._geom()
+            for i, a in enumerate(self._fids):
+                for j, b in enumerate(self._fids):
+                    if j > i and self._cell_rect(i, j, lw, cw).contains(float(e.pos().x()), float(e.pos().y())):
+                        c, t = self._cells.get((a, b), (0, 0))
+                        QToolTip.showText(e.globalPos(), f"{self._names.get(a, a)} with {self._names.get(b, b)}: {c} of {t} state pairs seen", self)
+                        return True
+            QToolTip.hideText()
+            return True
+        return super().event(e)
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pal = self.palette()
+        if not self._fids or not self._cells:
+            p.setPen(pal.placeholderText().color())
+            p.drawText(self.rect().adjusted(8, 4, -8, -4), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self._msg)
+            return
+        fm = QFontMetrics(self.font()); lw, cw = self._geom()
+        for j in range(len(self._fids)):
+            p.setPen(pal.windowText().color())
+            p.drawText(QRectF(lw + j * cw, 4, cw, self.ROW_H - 4), Qt.AlignmentFlag.AlignCenter, str(j + 1))
+        for i, a in enumerate(self._fids):
+            p.setPen(pal.windowText().color())
+            p.drawText(QRectF(0, 4 + (i + 1) * self.ROW_H, lw - 6, self.ROW_H - 4), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                       fm.elidedText(f"{i + 1}. {self._names.get(a, a)}", Qt.TextElideMode.ElideRight, lw - 10))
+            for j, b in enumerate(self._fids):
+                r = self._cell_rect(i, j, lw, cw)
+                if j <= i:
+                    p.setPen(Qt.PenStyle.NoPen); p.setBrush(pal.alternateBase()); p.drawRoundedRect(r, 3, 3)
+                    continue
+                c, t = self._cells.get((a, b), (0, 0))
+                frac = c / t if t else 0.0
+                bg = theme.heat_color(frac)
+                p.setPen(QPen(pal.mid().color(), 1, Qt.PenStyle.SolidLine if c else Qt.PenStyle.DashLine)); p.setBrush(bg); p.drawRoundedRect(r, 4, 4)
+                p.setPen(theme.text_on(bg))
+                p.drawText(r, Qt.AlignmentFlag.AlignCenter, fm.elidedText(f"{c}/{t}", Qt.TextElideMode.ElideRight, int(r.width() - 4)))
+        if self._hidden:
+            p.setPen(pal.placeholderText().color())
+            p.drawText(QRectF(0, 4 + (len(self._fids) + 1) * self.ROW_H, self.width(), 20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       f"Showing the first {len(self._fids)} features; {self._hidden} more are not drawn.")
+
+
 class ElidedLabel(QLabel):
     """One-line label that never forces its window wider: long text is cut with an ellipsis (full text in the tooltip)."""
 

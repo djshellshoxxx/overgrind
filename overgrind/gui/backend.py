@@ -547,15 +547,43 @@ def differential(project: Project, a: AdapterSpec, b: AdapterSpec, n_cases: int 
                                           factory_a=factory_a, factory_b=factory_b)
 
 
-def normalise_diff(rep) -> dict[str, list[str]]:
+def inspect_build(spec: AdapterSpec, factory, project: Project) -> list[ElementInfo]:
+    """Scan one build (read-only): `factory` launches a specific EXE, else the spec's adapter attaches to the project target."""
+    if factory is not None:
+        ad = factory()
+    else:
+        ad = make_adapter(spec)
+        ad.attach(project.target)
+    try:
+        return list(ad.inspect())
+    finally:
+        try:
+            ad.detach(False)
+        except Exception:
+            pass
+
+
+def noisy_targets(rep) -> set[str]:
+    """Controls that already differ when a build is compared with itself (A vs A): their differences are noise."""
+    out = set()
+    for key in ("regressions", "fixes", "mismatches", "incomparable"):
+        out |= {i.target for i in getattr(rep, key, ()) if i.target}
+    return out
+
+
+def normalise_diff(rep, noisy=frozenset()) -> dict[str, list[str]]:
     def line(i) -> str:
         tgt = f" '{i.target}'" if i.target else ""
         return f"Case {i.case_seq}{tgt}: build A = {i.a!r}, build B = {i.b!r}. {i.detail}".strip()
+    noisy = set(noisy)
+    keep = lambda items: [i for i in items if not (i.target and i.target in noisy)]  # noqa: E731
+    masked = [i for k in ("regressions", "fixes", "mismatches") for i in getattr(rep, k) if i.target and i.target in noisy]
     return {
-        "regressions": [line(i) for i in rep.regressions], "fixes": [line(i) for i in rep.fixes],
-        "mismatches": [line(i) for i in rep.mismatches], "incomparable": [line(i) for i in rep.incomparable],
+        "regressions": [line(i) for i in keep(rep.regressions)], "fixes": [line(i) for i in keep(rep.fixes)],
+        "mismatches": [line(i) for i in keep(rep.mismatches)], "incomparable": [line(i) for i in rep.incomparable],
+        "noise": [line(i) for i in masked], "noisy_controls": sorted(noisy),
         "summary": f"{rep.n_cases} cases, {rep.compared} fully comparable and identical",
-        "markdown": rep.to_markdown(),
+        "markdown": rep.to_markdown() + (f"\n## Masked as noise (differs even when A is run twice)\n" + "\n".join(f"- {line(i)}" for i in masked) + "\n" if masked else ""),
     }
 
 

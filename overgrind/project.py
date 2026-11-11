@@ -168,7 +168,8 @@ def load(path: str | os.PathLike) -> Project:
         raise ValueError("project file must contain a JSON object")
     version = data.get("schema_version")
     if version == SCHEMA_VERSION:
-        return demote_stale(from_dict(Project, data), exe_hash(None))
+        proj = from_dict(Project, data)
+        return demote_stale(proj, exe_hash(None, proj))
     if version in (None, 1):
         p = migrate_v1({k: v for k, v in data.items() if k != "schema_version"})
         return dataclasses.replace(p, name=data["name"]) if data.get("name") else \

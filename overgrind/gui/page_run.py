@@ -7,12 +7,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QProgressBar, QPushButton,
-    QSizePolicy, QVBoxLayout, QWidget,
+    QRadioButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from ..types import Action, RunStats
 from . import backend, theme
-from .widgets import Atlas, PageBase, Ring, muted
+from .widgets import Atlas, PageBase, PairMatrix, Ring, muted
+from .workers import run_async
 
 STATE_TEXT = {
     "idle": "Ready. Press Start when you are happy with the plan.", "starting": "Starting the program and the test worker...",
@@ -96,6 +97,9 @@ class RunPage(PageBase):
         self._prev_recent: tuple[Action, ...] = ()
         self._atlas_sig: tuple | None = None
         self.revalidate = None            # set by the main window: re-runs project.validate() right now
+        self._rank_cache: tuple | None = None      # (project id, table) rank -> state
+        self._rank_job: int | None = None
+        self._pair_sig: tuple | None = None
         self._acked = ""                  # project fingerprint the tester already confirmed risks for
 
         bar = QHBoxLayout()
@@ -127,8 +131,20 @@ class RunPage(PageBase):
         self.current = muted("", wrap=True); self.body.addWidget(self.current)
 
         box = QGroupBox("Feature-State Atlas"); bl = QVBoxLayout(box)
+        vt = QHBoxLayout()
+        self.view_states = QRadioButton("States"); self.view_pairs = QRadioButton("Pairs (t-way)")
+        self.view_states.setChecked(True)
+        self.view_states.setToolTip("One cell per feature state, with how often it was visited.")
+        self.view_pairs.setToolTip("One cell per pair of features: how many of their state pairs have been seen together.")
+        self.view_states.setAccessibleName("Atlas view: states"); self.view_pairs.setAccessibleName("Atlas view: pairs")
+        vt.addWidget(QLabel("View:")); vt.addWidget(self.view_states); vt.addWidget(self.view_pairs); vt.addStretch(1)
+        bl.addLayout(vt)
         top = QHBoxLayout()
-        self.atlas = Atlas(); top.addWidget(self.atlas, 1)
+        self.atlas = Atlas(); self.pairs = PairMatrix()
+        self.views = QStackedWidget(); self.views.addWidget(self.atlas); self.views.addWidget(self.pairs)
+        self.views.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        top.addWidget(self.views, 1)
+        self.view_pairs.toggled.connect(self._switch_view)
         right = QVBoxLayout()
         self.ring = Ring(); right.addWidget(self.ring)
         self.bar = QProgressBar(); self.bar.setTextVisible(True); self.bar.setFormat("Value ranges: %p%"); self.bar.setFixedWidth(150)
@@ -143,7 +159,13 @@ class RunPage(PageBase):
         self.guarantee.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         f = self.guarantee.font(); f.setItalic(True); self.guarantee.setFont(f)
         self.guarantee.setAccessibleName("Coverage guarantee")
-        bl.addWidget(self.cov_caption); bl.addWidget(self.guarantee); bl.addWidget(self.btn_copy_cov, 0, Qt.AlignmentFlag.AlignLeft)
+        self.hist_label = muted("")
+        self.why_title = QLabel("<b>Why not 100%?</b>"); self.why_title.setTextFormat(Qt.TextFormat.RichText)
+        self.why = QListWidget(); self.why.setAccessibleName("Why coverage is not 100%"); self.why.setMaximumHeight(110)
+        self.why.setSelectionMode(QListWidget.SelectionMode.NoSelection); self.why.setWordWrap(True)
+        self.why.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        bl.addWidget(self.cov_caption); bl.addWidget(self.hist_label); bl.addWidget(self.guarantee)
+        bl.addWidget(self.why_title); bl.addWidget(self.why); bl.addWidget(self.btn_copy_cov, 0, Qt.AlignmentFlag.AlignLeft)
         self.body.addWidget(box)
 
         self.body.addWidget(QLabel("<b>Recent steps</b>"))
@@ -271,7 +293,7 @@ class RunPage(PageBase):
         self.t_errors.set(f"{st.errors_unique:,}"); self.t_crash.set(f"{st.crashes:,}"); self.t_hang.set(f"{st.hangs:,}")
         self.t_harness.set(f"{st.harness_errors:,}"); self.t_restart.set(f"{st.restarts:,}")
         self.current.setText(f"Now: {st.current}" if st.current else "")
-        exact = state_visits(st.coverage)
+        exact = state_visits(st.coverage) or self._ranked_visits(st.coverage)
         if exact:
             self.atlas.sampled = False
             self._visits = exact
@@ -327,5 +349,74 @@ class RunPage(PageBase):
         if cv.buckets_total:
             self.bar.setRange(0, cv.buckets_total); self.bar.setValue(cv.buckets_visited)
             self.bar.setFormat(f"Value ranges: {cv.buckets_visited:,}/{cv.buckets_total:,}")
-        self.cov_caption.setText(f"Full passes through all states: {cv.epochs}")
+        cap = f"Full passes through all states: {cv.epochs}"
+        if getattr(cv, "state_counts", ()):
+            cap += ". Exact per-state counts (each state's count stops at 255)."
+        self.cov_caption.setText(cap)
+        hist = tuple(getattr(cv, "visit_hist", ()) or ())
+        if hist:
+            last = len(hist) - 1
+            self.hist_label.setText("States by number of visits: " + ", ".join(f"{(str(k) + '+') if k == last and last >= 8 else k}x: {n:,}" for k, n in enumerate(hist)))
+        self.hist_label.setVisible(bool(hist))
+        self._why(cv)
+        self._pair_view(cv)
         self.guarantee.setText(cv.guarantee or "No coverage statement is available for this strategy yet.")
+
+    # ---- exact per-state counts (Coverage.state_counts, by rank) mapped to feature states
+    def _shown(self) -> set[tuple[str, str]]:
+        return {(f.id, s) for f in self.model.project.features if f.kind != "action" and f.enabled for s in f.states}
+
+    def _ranked_visits(self, cv) -> dict[tuple[str, str], int]:
+        counts = tuple(getattr(cv, "state_counts", ()) or ())
+        if not counts:
+            return {}
+        proj = self.model.project
+        cache = self._rank_cache
+        if cache is None or cache[0] is not proj or len(cache[1]) < len(counts):
+            if self._rank_job is None:                    # unranking up to 4,096 states: off the UI thread, once per project
+                self._rank_job = id(proj)
+
+                def done(table, proj=proj):
+                    self._rank_job = None; self._rank_cache = (proj, table)
+                    self.on_stats(self.session.last_stats)
+                def fail(_m):
+                    self._rank_job = None; self._rank_cache = (proj, [])
+                run_async(lambda: backend.state_rank_table(proj, min(len(counts), backend.MAX_RANKED_STATES)), done, fail)
+            return {}
+        return backend.visits_from_ranks(cache[1], counts, self._shown())
+
+    def _why(self, cv) -> None:
+        items = backend.why_not_complete(cv)
+        self.why.clear()
+        if not items:
+            self.why.addItem("Nothing to report: no gaps are known right now.")
+        for t in items:
+            self.why.addItem("\u2022 " + t)
+        self.why.setMaximumHeight(min(160, 24 * max(2, len(items)) + 10))
+
+    def _switch_view(self, pairs: bool) -> None:
+        self.views.setCurrentIndex(1 if pairs else 0)
+        self._pair_sig = None
+        if pairs:
+            self._ranked_visits(self.session.last_stats.coverage)
+            self._pair_view(self.session.last_stats.coverage)
+
+    def _pair_view(self, cv) -> None:
+        if not self.view_pairs.isChecked():
+            return
+        counts = tuple(getattr(cv, "state_counts", ()) or ())
+        rows = [(f.id, f.name or f.id) for f in self.model.project.features if f.kind != "action" and f.enabled]
+        cache = self._rank_cache
+        if not counts or len(rows) < 2:
+            self.pairs.clear("Pair coverage needs exact per-state counts from the run (up to 4,096 states) and at least two features. "
+                             "Until then, use the States view.")
+            return
+        if cache is None or cache[0] is not self.model.project or not cache[1]:
+            return                                          # the rank table is still being built (see _ranked_visits)
+        sig = (hash(counts), len(rows))
+        if sig == self._pair_sig:
+            return
+        self._pair_sig = sig
+        fids = [r[0] for r in rows]; names = dict(rows); table = cache[1]
+        run_async(lambda: backend.pair_coverage(table, counts, fids, {}),
+                  lambda cells: self.pairs.set_data(fids, names, cells), lambda m: self.pairs.clear(f"Could not compute pair coverage. {m}"))

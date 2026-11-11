@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import time
 from datetime import datetime
 
@@ -10,7 +11,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyMod
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QProgressBar, QPushButton,
-    QSplitter, QTableView, QTextBrowser, QVBoxLayout, QWidget,
+    QSplitter, QTabWidget, QTableView, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from ..types import ErrorEvent
@@ -31,6 +32,24 @@ def step_html(kind: str, target: str, value) -> str:
         return "Wait for the app to settle"
     t, v = html.escape(str(target)), html.escape("(empty)" if value == "" else str(value))
     return fn(t, v) if fn else f"{html.escape(kind)} {t} {v}"
+
+
+def step_plain(kind: str, target, value) -> str:
+    """The same sentence as step_html, as plain text (for the diff table)."""
+    return html.unescape(re.sub(r"</?b>", "", step_html(kind, target, value)))
+
+
+def eval_value(text: str):
+    """Undo repr() of an action value for display (falls back to the text)."""
+    import ast
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return text
+
+
+def _key(kind, target, value) -> tuple:
+    return (str(kind), str(target), repr(value))
 
 
 class _ClickLabel(QLabel):
@@ -169,6 +188,8 @@ class ErrorsPage(PageBase):
         self._reduced_running = False
         self._reducer = None
         self._cancel = False
+        self._prog: dict = {}
+        self._orig_n = 0
 
         bar = QHBoxLayout()
         self.cat = QComboBox(); self.cat.addItem("All kinds", ""); [self.cat.addItem(v, k) for k, v in theme.CATEGORY_LABEL.items()]
@@ -226,6 +247,8 @@ class ErrorsPage(PageBase):
         dl.addWidget(self.progress)
         self.status = muted(""); dl.addWidget(self.status)
         mid = QHBoxLayout()
+        self.reliab = QLabel(); self.reliab.setWordWrap(True); self.reliab.setAccessibleName("Reliability")
+        dl.addWidget(self.reliab)
         self.detail = QTextBrowser(); self.detail.setOpenLinks(False); self.detail.setMinimumHeight(110)
         self.detail.setAccessibleName("Error details")
         mid.addWidget(self.detail, 1)
@@ -233,7 +256,18 @@ class ErrorsPage(PageBase):
         self.shot.setVisible(False); self.shot.setAccessibleName("Screenshot of the failure"); self.shot.setToolTip("Click to open the screenshot full size.")
         self.shot.setCursor(Qt.CursorShape.PointingHandCursor)
         mid.addWidget(self.shot)
-        dl.addLayout(mid, 1)
+        self.tabs = QTabWidget(); self.tabs.setDocumentMode(True)
+        t0 = QWidget(); t0.setLayout(mid); mid.setContentsMargins(0, 4, 0, 0)
+        self.tabs.addTab(t0, "Details")
+        self.diff = QTableWidget(0, 2); self.diff.setAccessibleName("Original steps next to the shortest steps")
+        self.diff.setHorizontalHeaderLabels(["All recorded steps", "Shortest steps that still fail"])
+        self.diff.verticalHeader().setVisible(False); self.diff.setWordWrap(True)
+        self.diff.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.diff.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.diff_note = muted("")
+        t1 = QWidget(); l1 = QVBoxLayout(t1); l1.setContentsMargins(0, 4, 0, 0); l1.addWidget(self.diff_note); l1.addWidget(self.diff, 1)
+        self.tabs.addTab(t1, "Original vs shortest")
+        dl.addWidget(self.tabs, 1)
         split.addWidget(det)
         split.setStretchFactor(0, 2); split.setStretchFactor(1, 3)
         self.split = split
@@ -321,8 +355,13 @@ class ErrorsPage(PageBase):
         self.badge.setVisible(True)
         cat = theme.CATEGORY_LABEL.get(e.category, e.category)
         self.d_title.setText(f"{cat}: {e.message or e.signature}")
-        self.badge.set_reliability(e.reliability if e.reliability in theme.RELIABILITY else "unconfirmed")
+        rel = e.reliability if e.reliability in theme.RELIABILITY else "unconfirmed"
+        counts = backend.reliability_counts(e)
+        self.badge.set_reliability(rel, counts)
+        self.reliab.setText(f"Reliability: {theme.RELIABILITY[rel][0]}" + (f", it failed again in {counts[0]} of {counts[1]} replays." if counts else ". Not replayed yet.")
+                            + (" Flaky: the shortened steps may be incomplete." if rel == "flaky" else ""))
         self.detail.setHtml(self._html(e))
+        self._fill_diff(e)
         self._screenshot(e)
 
     def _html(self, e: ErrorEvent) -> str:
@@ -351,6 +390,40 @@ class ErrorsPage(PageBase):
         if e.attachments:
             out.append("<h4>Files kept</h4><ul>" + "".join(f"<li>{html.escape(k)}: {html.escape(v)}</li>" for k, v in e.attachments.items()) + "</ul>")
         return "".join(out)
+
+    def original_steps(self, e: ErrorEvent) -> list[tuple]:
+        hist = e.history
+        return [_key(a.kind, a.target, a.value) for a in hist]
+
+    def _fill_diff(self, e: ErrorEvent) -> None:
+        red = e.reduced
+        self.diff.clearContents()
+        if not red or red.get("steps") is None:
+            self.diff.setRowCount(0)
+            self.diff_note.setText("Press Reproduce and shrink to see which recorded steps are not needed.")
+            return
+        orig = self.original_steps(e)
+        new = [_key(s.get("kind", ""), s.get("target", ""), s.get("value")) for s in red["steps"]]
+        if not orig:
+            orig = list(new)
+        left, right = backend.step_diff(orig, new)
+        removed = sum(1 for t, _ in left if t == "removed")
+        self.diff_note.setText(f"Removed {removed} of {len(orig)} recorded steps. Steps marked \u2212 (struck through) were not needed; "
+                               f"steps marked ~ changed value.")
+        self.diff.setRowCount(len(left))
+        bad = theme.sem("fail"); chg = theme.sem("warn")
+        for r, ((lt, li), (rt, ri)) in enumerate(zip(left, right)):
+            for col, tag, item in ((0, lt, li), (1, rt, ri)):
+                txt = step_plain(item[0], item[1], eval_value(item[2])) if item else ""
+                prefix = {"removed": "\u2212 ", "changed": "~ ", "same": "  ", "gap": ""}[tag]
+                cell = QTableWidgetItem(prefix + txt)
+                if tag == "removed":
+                    f = cell.font(); f.setStrikeOut(True); cell.setFont(f)
+                    cell.setForeground(bad); cell.setToolTip("Removed: the failure still happens without this step.")
+                elif tag == "changed":
+                    cell.setForeground(chg); f = cell.font(); f.setBold(True); cell.setFont(f); cell.setToolTip("This step has a simpler value.")
+                self.diff.setItem(r, col, cell)
+        self.diff.resizeRowsToContents()
 
     def _attachment_path(self, e: ErrorEvent, rel: str) -> str:
         return rel if os.path.isabs(rel) else os.path.join(self.dir, rel)
@@ -385,10 +458,17 @@ class ErrorsPage(PageBase):
         self.progress.setRange(0, 0); self.progress.setVisible(True); self.progress.setFormat("Replaying...")
         self.status.setText("Replaying the failure and removing unneeded steps. This can take a minute; the original evidence is never changed.")
         proj, store = self.model.project, self.store
-        # Cancelling jumps the reducer's clock past its time budget, so it stops at the next replay and keeps the best result so far.
+        self._prog = {}
+        native = backend.reducer_supports_callbacks()
+        # Older Reducer builds have no cancel flag: cancelling then jumps the reducer's clock past its time budget.
         clock = lambda: time.monotonic() + (1e9 if self._cancel else 0.0)  # noqa: E731
 
+        def on_progress(d):
+            self._prog = dict(d)
+
         def work():
+            if native:
+                return backend.reduce_event(proj, spec, e, store=store, cancel=lambda: self._cancel, on_progress=on_progress)
             R = backend._fn("reduce", "Reducer")
             try:
                 red = R(proj, spec, store=store, clock=clock)
@@ -402,15 +482,22 @@ class ErrorsPage(PageBase):
                     red.close()
                 except Exception:
                     pass
+        self._orig_n = len(e.history)
         self.poll.start()
         run_async(work, self._reduced, self._reduce_fail)
 
     def _poll_reduce(self) -> None:
+        d = self._prog or {}
         red = self._reducer
-        n, cap = getattr(red, "replays", None), getattr(red, "max_replays", None)
+        n = d.get("replays", getattr(red, "replays", None))
+        cap = d.get("max_replays", getattr(red, "max_replays", None))
         if isinstance(n, int) and isinstance(cap, int) and cap > 0:
             self.progress.setRange(0, cap); self.progress.setValue(min(n, cap))
-            self.progress.setFormat(f"Replays: {n} of at most {cap}")
+            text = f"Replay {n} of at most {cap}"
+            steps = d.get("steps")
+            if isinstance(steps, int) and self._orig_n:
+                text = f"Removed {max(0, self._orig_n - steps)} of {self._orig_n} steps. " + text
+            self.progress.setFormat(text)
 
     def _cancel_reduce(self) -> None:
         self._cancel = True
@@ -431,14 +518,16 @@ class ErrorsPage(PageBase):
         self.events[ev.id] = ev
         rel = theme.RELIABILITY.get(ev.reliability, theme.RELIABILITY["unconfirmed"])
         partial = " It was stopped early, so the steps may not be as short as possible." if self._cancel else ""
-        self.status.setText(f"Done. Reliability: {rel[0]}. {rel[2]}{partial}")
+        c = backend.reliability_counts(ev)
+        self.status.setText(f"Done. Reliability: {rel[0]}" + (f" ({c[0]} of {c[1]} replays failed again)" if c else "") + f". {rel[2]}{partial}")
         self._fill()
+        self.tabs.setCurrentIndex(1)
 
     def _copy(self) -> None:
         e = self.current()
         if e is None:
             return
-        QGuiApplication.clipboard().setText(backend.export_recipe(e, self.model.project))
+        QGuiApplication.clipboard().setText(backend.export_issue_text(e, self.model.project))
         self.status.setText("Copied. Paste it into your issue tracker.")
 
     def _save(self) -> None:
@@ -451,7 +540,7 @@ class ErrorsPage(PageBase):
             return
         try:
             with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(backend.export_recipe(e, self.model.project))
+                fh.write(backend.export_issue_text(e, self.model.project))
         except OSError as ex:
             self.status.setText(f"Could not save the file. {ex.strerror or ex}")
             return
