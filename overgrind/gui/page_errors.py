@@ -264,7 +264,7 @@ class ErrorsPage(PageBase):
         self.diff.verticalHeader().setVisible(False); self.diff.setWordWrap(True)
         self.diff.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.diff.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.diff_note = muted("")
+        self.diff.setMinimumHeight(170); self.diff_note = muted("")
         t1 = QWidget(); l1 = QVBoxLayout(t1); l1.setContentsMargins(0, 4, 0, 0); l1.addWidget(self.diff_note); l1.addWidget(self.diff, 1)
         self.tabs.addTab(t1, "Original vs shortest")
         dl.addWidget(self.tabs, 1)
@@ -421,7 +421,8 @@ class ErrorsPage(PageBase):
                     f = cell.font(); f.setStrikeOut(True); cell.setFont(f)
                     cell.setForeground(bad); cell.setToolTip("Removed: the failure still happens without this step.")
                 elif tag == "changed":
-                    cell.setForeground(chg); f = cell.font(); f.setBold(True); cell.setFont(f); cell.setToolTip("This step has a simpler value.")
+                    cell.setForeground(chg); f = cell.font(); f.setBold(True); cell.setFont(f)
+                    cell.setToolTip("This step is kept but with a simpler value." if col == 1 else "The value this step had when it failed.")
                 self.diff.setItem(r, col, cell)
         self.diff.resizeRowsToContents()
 

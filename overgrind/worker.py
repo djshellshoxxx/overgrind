@@ -52,11 +52,11 @@ class WorkerConfig:
 
 
 def load_callable(path: str) -> Any:
-    mod, _, attr = path.partition(":")
-    if not mod or not attr:
-        raise HarnessError(f"bad factory {path!r}; expected 'package.module:callable'")
+    from .registry import resolve_callable      # static imports keep PyInstaller builds working
     try:
-        return getattr(importlib.import_module(mod), attr)
+        return resolve_callable(path)
+    except ValueError as exc:
+        raise HarnessError(str(exc)) from exc
     except (ImportError, AttributeError) as exc:
         raise HarnessError(f"cannot load {path!r}: {exc}") from exc
 
@@ -341,6 +341,8 @@ class Worker:
         cfg = self.cfg
         factory = load_callable(cfg.adapter_spec.factory)
         self.adapter = factory(**dict(cfg.adapter_spec.kwargs))
+        from .danger import GuardedAdapter         # tripwire: a relabelled dangerous button is never clicked
+        self.adapter = GuardedAdapter(self.adapter, self.project)
         try:
             self.adapter.attach(self.project.target)
         except Exception as exc:

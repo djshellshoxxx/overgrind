@@ -63,7 +63,8 @@ class Pure(unittest.TestCase):
         a = [("reset", "", "None"), ("state", "A", "'on'"), ("control", "W", "91"), ("invoke", "Go", "None")]
         b = [("reset", "", "None"), ("state", "A", "'on'"), ("control", "W", "37")]
         left, right = backend.step_diff(a, b)
-        self.assertEqual([t for t, _ in left].count("removed"), 2)
+        self.assertEqual([t for t, _ in left].count("removed"), 1)
+        self.assertEqual(([t for t, _ in left].count("changed"), [t for t, _ in right].count("changed")), (1, 1))
         self.assertIn("changed", [t for t, _ in right])
         self.assertEqual(len(left), len(right))
 
@@ -224,7 +225,6 @@ class CompareReview(GuiCase):
         self.assertEqual(d.decisions()[d.rows[0]["id"]], "ignore")
         d.compare(); self.assertTrue(d.progress.isVisible()); self.assertIn("alibrat", d.progress.format())
         self.assertTrue(pump(lambda: d.stack.currentIndex() == 2, 120), d.status.text())
-        self.assertIn("could not", "x" + d.status.text()) if False else None
         self.assertTrue(d.btn_save.isEnabled()); self.assertIn("Differential report", d._report_md)
         d.close()
 
@@ -252,7 +252,7 @@ class ReduceView(GuiCase):
         self.assertTrue(struck and all(struck))
         col1 = [pg.diff.item(r, 1).text() for r in range(pg.diff.rowCount())]
         self.assertTrue(any(t.startswith("~ ") for t in col1))
-        self.assertIn("Removed 3 of 6", pg.diff_note.text()) if False else self.assertIn("Removed", pg.diff_note.text())
+        self.assertIn("Removed 3 of 6", pg.diff_note.text())
         w.close()
 
     def test_reliability_badge_shows_counts(self):

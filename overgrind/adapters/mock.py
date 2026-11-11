@@ -159,13 +159,18 @@ class MockAdapter:
     # ------------------------------------------------------------ TargetAdapter
     def set_feature_state(self, feature: FeatureDef, state: str) -> None:
         self._op("state", feature.id, state)
-        self.calls.append(("state", feature.id, state))
+        self._log(("state", feature.id, state))
         if self.requires_rules or self.mutex_groups:
             if not self._apply_state_rules(feature, state):
                 return
         self._states[feature.id] = state
         self._snap()
         self._dirty = True
+
+    def _log(self, entry: tuple) -> None:
+        self.calls.append(entry)
+        if len(self.calls) > 4000:          # bounded memory for long runs
+            del self.calls[:2000]
 
     def _is_active(self, fid: str, states: dict[str, str] | None = None) -> bool:
         st = self._states if states is None else states
@@ -199,7 +204,7 @@ class MockAdapter:
             del self._hist[:-64]
 
     def invoke(self, feature: FeatureDef) -> None:
-        self.calls.append(("invoke", feature.id))
+        self._log(("invoke", feature.id))
         self._op("invoke", feature.id)
         if feature.dangerous:
             raise HarnessError("mock: refusing to invoke a dangerous feature")
@@ -207,7 +212,7 @@ class MockAdapter:
 
     def set_control(self, control: ControlDef, value: Value) -> None:
         self._op("control", control.id, value)
-        self.calls.append(("control", control.id, value))
+        self._log(("control", control.id, value))
         if control.id in self.ignore_writes:
             return
         if control.id in self.clamp and isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -233,7 +238,7 @@ class MockAdapter:
             raise HarnessError("mock: cannot reset a dead or hung target")
         self._modal = ""
         self._project = project
-        self.calls.append(("reset", "*"))
+        self._log(("reset", "*"))
         keep = {k: self._values[k] for k in self.forget_on_reset if k in self._values}
         self._states = {f.id: f.default_state for f in project.features if f.kind != "action"}
         self._values = {c.id: c.default for c in project.controls}

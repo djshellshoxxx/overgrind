@@ -139,7 +139,7 @@ class PlanPage(PageBase):
         self.ledger = QTableWidget(0, 5); self.ledger.setHorizontalHeaderLabels(["Result", "Element", "What we found", "How to fix", "Actions"])
         self.ledger.setAccessibleName("Trust Ledger")
         self._table_style(self.ledger, 2, 3); self.ledger.setVisible(False)
-        self.ledger.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive); self.ledger.setColumnWidth(4, 190)
+        self.ledger.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive); self.ledger.setColumnWidth(4, 210)
         self._ledger_rows: list[dict] = []
         self._ledger_btns: dict[int, list[QPushButton]] = {}
         self._rechecking: int | None = None

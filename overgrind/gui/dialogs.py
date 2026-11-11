@@ -99,7 +99,7 @@ class CompareDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         h = self.table.horizontalHeader(); h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch); h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for c, w in ((2, 110), (3, 110), (4, 170)):
+        for c, w in ((2, 150), (3, 110), (4, 170)):
             self.table.setColumnWidth(c, w)
         l2.addWidget(self.table, 1)
         r2 = QHBoxLayout()
@@ -170,7 +170,7 @@ class CompareDialog(QDialog):
         for i, r in enumerate(self.rows):
             self.table.setItem(i, 0, QTableWidgetItem(f"{r['name']}  ({r['a']})"))
             self.table.setItem(i, 1, QTableWidgetItem(r["b"] or "(nothing found)"))
-            sc = QTableWidgetItem(f"{r['score']:.2f}  " + "\u25a0" * round(r["score"] * 8) + "\u25a1" * (8 - round(r["score"] * 8)))
+            sc = QTableWidgetItem(f"{r['score']:.2f}  " + "\u25a0" * round(r["score"] * 6) + "\u25a1" * (6 - round(r["score"] * 6)))
             sc.setToolTip("0 = nothing alike, 1 = identical (name, ID, type, place in the window).")
             self.table.setItem(i, 2, sc)
             word, colour = self.STATUS[r["status"]]

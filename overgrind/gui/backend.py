@@ -331,7 +331,7 @@ def fix_dict(fx) -> dict:
 
 
 FIX_WORDS = {
-    "mark_dangerous": "Mark as dangerous", "adopt_default": "Use the value we saw as the default",
+    "mark_dangerous": "Mark as dangerous", "adopt_default": "Use observed default",
     "narrow_domain": "Narrow the range", "skip_control": "Skip this control", "set_run": "Change a plan setting",
     "acknowledge": "I understand the risk", "set_selector": "Use the closest element",
 }
@@ -509,9 +509,14 @@ def step_diff(original: list[tuple], reduced: list[tuple]) -> tuple[list[tuple[s
             for a, b in zip(original[i1:i2], reduced[j1:j2]):
                 left.append(("same", a)); right.append(("same", b))
         else:
-            for a in original[i1:i2]:
-                left.append(("removed", a)); right.append(("gap", ()))
-            for b in reduced[j1:j2]:               # a changed value: shown on the right as changed
+            olds, news = list(original[i1:i2]), list(reduced[j1:j2])
+            for a in olds:
+                m = next((b for b in news if b[:2] == a[:2]), None)       # same step, different value: one 'changed' row
+                if m is not None:
+                    news.remove(m); left.append(("changed", a)); right.append(("changed", m))
+                else:
+                    left.append(("removed", a)); right.append(("gap", ()))
+            for b in news:
                 left.append(("gap", ())); right.append(("changed", b))
     return left, right
 
