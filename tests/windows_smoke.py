@@ -239,7 +239,7 @@ class EndToEnd(unittest.TestCase):
             try:
                 finished = ctl.join(seconds + 30)
             finally:
-                if ctl.state() != "finished":
+                if ctl.state != "finished":
                     ctl.stop()
             if not finished:
                 dump_diag("e2e-" + bug.replace(":", "_"))

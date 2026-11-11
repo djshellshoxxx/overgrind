@@ -50,6 +50,12 @@ class TargetPage(PageBase):
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents); h.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setMinimumHeight(170)
+        # real window lists have long names: the table must never dictate the page width
+        self.table.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.table.setMinimumWidth(0)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.table.setWordWrap(False)
+        self.filter.setMinimumWidth(0)
         self.table.setAccessibleName("Running programs")
         rl.addWidget(self.table)
         self.list_note = muted("")
