@@ -34,6 +34,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -X utf8 -m unittest discover -s tests -v
       - name: Windows smoke (fixture app + UIA adapter, interactive desktop)
+        if: always()
         # QT_QPA_PLATFORM must NOT be offscreen here: the fixture needs a real window for UIA.
         timeout-minutes: 12
         run: python -X utf8 tests/windows_smoke.py
@@ -46,8 +47,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Build executables
+        if: always()
         run: pyinstaller --noconfirm --clean packaging/overgrind.spec
       - name: Frozen smoke (no Python on PATH needed)
+        if: always()
         run: |
           .\dist\overgrind-cli\overgrind-cli.exe v2 estimate --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -56,9 +59,11 @@ jobs:
           # the worker entry and string-imported adapters must resolve inside the frozen app
           .\dist\overgrind-cli\overgrind-cli.exe --help
       - name: Package
+        if: always()
         run: |
           Compress-Archive -Path dist\Overgrind, dist\overgrind-cli -DestinationPath Overgrind-windows-x64.zip
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Overgrind-windows-x64
           path: Overgrind-windows-x64.zip
