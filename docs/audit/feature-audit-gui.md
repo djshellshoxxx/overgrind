@@ -21,7 +21,7 @@ Method: the real app was driven offscreen (`--demo` flow, scripted, screenshots 
 | Step | Status | Evidence / gap |
 |---|---|---|
 | 1 Target: process picker or EXE, path, bits, PID, title | P | picker + EXE + card done; no crosshair picker, no version/build hash/automation capabilities, no "owned windows" narrowing |
-| 2 Inspect: tree, search, detail, patterns, bounds, access path | P | all present; no hover/crosshair highlight in the target; no manual capture of nested pages |
+| 2 Inspect: tree, search, detail, patterns, bounds, access path | P | R2: "Pick on screen" crosshair (click swallowed, hit-tests the scanned tree) and a click-through dashed outline on the selected element, both Windows-only (disabled with a reason elsewhere); no manual capture of nested pages |
 | 3 Features: name, kind, states, default, include, dangerous, constraints | P | activation/verify/reset actions and UI location not editable; persistent-vs-event-vs-exclusive shown via Kind |
 | 4 Controls: original vs restricted domain, skip/read-only, scope | I | editor now clamps to original range (`test_numeric_editor_cannot_leave_the_original_range_or_invert`); step/precision shown; no "allowed mutations" |
 | 5 Combination selection: strategy, all-off, reset policy, counts, preview | I | estimate + 20-case preview |
@@ -33,13 +33,13 @@ Method: the real app was driven offscreen (`--demo` flow, scripted, screenshots 
 ## Feature UX hooks
 | Hook | Status | Evidence / gap |
 |---|---|---|
-| U1 Atlas grid, colour by count, red outline for errors, guarantee verbatim, copy report | P | grid + outline + guarantee + Copy coverage report done. Missing: Hilbert view (>4096 states), pair matrix, timeline, "why not 100%" list, unreachable hatching, CSV export |
-| U2 Trust Ledger table with icon+word, fix text | P | table done. Missing: row click highlight overlay, fix buttons (mark dangerous / adopt default / narrow domain), inspector evidence trail |
+| U1 Atlas grid, colour by count, red outline for errors, guarantee verbatim, copy report | P | R2: States/Pairs view toggle (pair matrix from Coverage.state_counts via scheduler.unrank_state, `seen/possible` per cell), exact per-state counts and visit_hist, "Why not 100%?" list (why_not_complete, unreachable, failed_to_apply, unverified, infeasible, unknown). Missing: Hilbert view (>4096 states), timeline, unreachable hatching, CSV export |
+| U2 Trust Ledger table with icon+word, fix text | P | R2: per-row fix buttons from structured FixAction (mark dangerous, adopt default, narrow range, skip, set selector, plan setting, acknowledge; undoable) and a per-row Re-check. Missing: row click highlight overlay, inspector evidence trail |
 | U2 Start disabled on fail; typed project name override; danger review | I (new) | `PreflightGate` tests; danger list comes from validate warnings; no lexicon match text of its own |
 | U2 inspector badges V/I/M/? | I | Verified/Inferred/Manual/Unknown badge in tree, tables, detail |
-| U3 Reliability chip, Reproduce spinner/progress/cancel, copy issue, save | P | chip + progress (replay count) + Cancel + Copy + Save-as-file. Missing: diff original vs reduced, "Estimate rate (59 tries)", per-step "removed 31 of 38" |
-| U4 Suggest dependencies review | P | list with accept/reject-all and evidence count. Missing: per-row Reject/Test again, q-value, impact on state count; banner "proposals are hypotheses" added only in spec text |
-| U5 Compare builds | P | A/B picker, run, grouped verdicts. Missing: map review table, calibration progress, reliability chips, side-by-side values, report export |
+| U3 Reliability chip, Reproduce spinner/progress/cancel, copy issue, save | P | R2: side-by-side original vs shortest steps (strike-through and -/~ markers), chip with k of n, "removed X of Y" progress via Reducer.cancel/on_progress, Copy/Save via reduce.export_issue. Missing: "Estimate rate (59 tries)" |
+| U4 Suggest dependencies review | I (R2) | table with evidence k/n, q-value, confidence badge, effect on state count, per-row Accept / Reject / Test again, hypotheses banner; rejected ids are remembered for the next run |
+| U5 Compare builds | P | R2: 3 steps (builds, mapping review with similarity score and confirm/override/ignore, result), A-vs-A noise calibration with progress and masking, report export. Missing: reliability chips, side-by-side values, thumbnail highlight |
 | B1 stability meter, ranked fallbacks, WHY text | I | meter + reason + fix hints + ranked backups with scores; badge A-D letters not used (0-100 + word) |
 
 Counts: UX spec 11 rows (11 I). Workflow 9 steps (5 I, 4 P, 0 M). Hooks 8 rows (3 I, 5 P, 0 M).

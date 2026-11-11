@@ -82,3 +82,11 @@ Stop conditions are not a field of `Project`, so the GUI stores them as `run.str
 - **Closing during a run** stops the controller on a background thread, then closes. Unexpected exceptions are logged to `overgrind-gui.log` and shown calmly (never silently).
 - **Undo**: typing in one box is one undo step; undoing back to the saved state clears the dirty flag.
 - **Atlas**: cells wrap for many states, red outline plus "!" marks states where an error happened, hover tooltips; uses exact per-state counts when `Coverage` provides them, otherwise says "sampled".
+
+## Round-2 additions
+- **Inspect**: "Pick on screen" (crosshair sheet that swallows the click, outlines and names the element under the pointer, Esc cancels) and an "Outline on screen" dashed, translucent, click-through window around the selected element. Both are Windows-only; elsewhere they are disabled and the tooltip says why. Hit-testing uses the scanned tree, so no extra access to the app is needed.
+- **Trust Ledger**: each row has its structured fix buttons (plain-words captions, backend label as tooltip) and a Re-check. A fix is one undoable project edit; Re-check re-runs the preflight and reports the row's before/after.
+- **Suggest dependencies**: review table (evidence, q-value, confidence badge, effect on the state count) with Accept / Reject / Test again per row. Nothing is applied until "Apply accepted".
+- **Compare builds**: Step 1 builds, Step 2 mapping review (similarity score, Matched / Please check / No match, confirm / ignore / override; unsure matches default to ignore), Step 3 result. The comparison first runs A against A (noise calibration) and masks controls that differ there.
+- **Reduce view**: "Original vs shortest" tab with removed steps struck through and marked with a minus sign, changed values marked with ~; reliability chip shows "k of n"; progress reads "Removed X of Y steps. Replay n of at most m"; Copy/Save use `export_issue` when present.
+- **Atlas**: States / Pairs (t-way) toggle; exact per-state counts come from `Coverage.state_counts` mapped with `scheduler.unrank_state` (computed off the UI thread, at most 4,096 states); "Why not 100%?" list; guarantee sentence shown verbatim.
