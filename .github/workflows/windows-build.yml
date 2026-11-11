@@ -32,12 +32,18 @@ jobs:
       - name: Unit tests (offscreen Qt)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -X utf8 -m unittest discover -s tests -v
+        shell: pwsh
+        run: |
+          python -X utf8 -m unittest discover -s tests -v 2>&1 | Tee-Object -FilePath unit.log
+          exit $LASTEXITCODE
       - name: Windows smoke (fixture app + UIA adapter, interactive desktop)
         if: always()
         # QT_QPA_PLATFORM must NOT be offscreen here: the fixture needs a real window for UIA.
         timeout-minutes: 12
-        run: python -X utf8 tests/windows_smoke.py
+        shell: pwsh
+        run: |
+          python -X utf8 tests/windows_smoke.py 2>&1 | Tee-Object -FilePath smoke.log
+          exit $LASTEXITCODE
       - name: Upload smoke diagnostics
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
@@ -58,6 +64,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # the worker entry and string-imported adapters must resolve inside the frozen app
           .\dist\overgrind-cli\overgrind-cli.exe --help
+      - name: Summary (failing tests + smoke tail)
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Output '=== UNIT SUMMARY ==='
+          if (Test-Path unit.log) { Select-String -Path unit.log -Pattern '^(FAIL|ERROR):|^Ran |^FAILED|^OK|AssertionError|Error:' | Select-Object -First 40 | ForEach-Object { $_.Line } }
+          Write-Output '=== SMOKE TAIL ==='
+          if (Test-Path smoke.log) { Get-Content smoke.log -Tail 60 }
       - name: Package
         if: always()
         run: |
