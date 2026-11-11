@@ -229,6 +229,7 @@ class ChromeAndFiles(GuiCase):
 
     def test_recent_dedupes_slash_variants(self):
         w = demo_window()
+        w._store_recent([])                       # other tests share the settings file
         w._add_recent("/tmp/a/b.ovg.json")
         w._add_recent("/tmp/a//b.ovg.json")
         self.assertEqual(len(w._recent()), 1)

@@ -25,6 +25,7 @@ class InspectPage(PageBase):
         self.model = model
         self.elements: list[ElementInfo] = []
         self._items: list[QTreeWidgetItem] = []
+        self._scan_gen = 0
 
         bar = QHBoxLayout()
         self.btn_scan = QPushButton("Scan app"); self.btn_scan.setObjectName("Primary")
@@ -109,25 +110,53 @@ class InspectPage(PageBase):
         self.btn_scan.setEnabled(False); self.status.setText("Scanning...")
         spec = self.model.adapter_spec
         target = self.model.project.target
-        run_async(lambda: backend.inspect_target(spec, target), self._scanned, self._scan_failed)
+        self._scan_gen += 1
+        gen = self._scan_gen
+        run_async(lambda: backend.inspect_target(spec, target), lambda els: self._scanned(els, gen), lambda m: self._scan_failed(m, gen))
 
-    def _scan_failed(self, msg: str) -> None:
+    def _stale(self, gen: int | None) -> bool:
+        """A result from an older scan, or for a page whose Qt object is already gone, is dropped."""
+        if gen is not None and gen != self._scan_gen:
+            return True
+        try:
+            import shiboken6
+            return not shiboken6.isValid(self) or not shiboken6.isValid(self.tree)
+        except ImportError:
+            return False
+
+    def _clear_tree(self) -> None:
+        """Empty the tree without firing currentItemChanged on items that are being deleted."""
+        was = self.tree.blockSignals(True)
+        try:
+            self.tree.setUpdatesEnabled(False)
+            self.tree.clear()
+        finally:
+            self.tree.setUpdatesEnabled(True)
+            self.tree.blockSignals(was)
+        self._items = []
+
+    def _scan_failed(self, msg: str, gen: int | None = None) -> None:
+        if self._stale(gen):
+            return
         self.btn_scan.setEnabled(True); self.status.setText("")
         self._placeholder(f"We could not scan the program. {html.escape(msg)}<br>If you only want to look around, open the demo from File &gt; Open demo project.")
 
     def _placeholder(self, html: str) -> None:
-        self.tree.clear(); self._items = []
+        self._clear_tree()
         it = QTreeWidgetItem([""]); self.tree.addTopLevelItem(it)
         lab = QLabel(html); lab.setWordWrap(True); lab.setTextFormat(Qt.TextFormat.RichText); lab.setMargin(8)
         it.setFirstColumnSpanned(True)
         self.tree.setItemWidget(it, 0, lab)
         it.setFlags(Qt.ItemFlag.NoItemFlags)
 
-    def _scanned(self, els) -> None:
+    def _scanned(self, els, gen: int | None = None) -> None:
+        if self._stale(gen):
+            return
         self.btn_scan.setEnabled(True)
         self.elements = list(els)
         self.status.setText(f"{len(self.elements)} elements")
-        self.tree.clear(); self._items = []
+        self._clear_tree()
+        self.tree.setUpdatesEnabled(False)
         if not self.elements:
             self._placeholder("The scan finished but found no elements. Make sure the program window is open and not minimised, then scan again.")
             return
@@ -140,6 +169,7 @@ class InspectPage(PageBase):
             parent = self._items[e.parent] if e.parent is not None and 0 <= e.parent < len(self._items) else None
             (parent.addChild(it) if parent else self.tree.addTopLevelItem(it))
             self._items.append(it)
+        self.tree.setUpdatesEnabled(True)
         self.tree.expandAll()
         if self._items:
             self.tree.setCurrentItem(self._items[min(1, len(self._items) - 1)])
@@ -155,21 +185,26 @@ class InspectPage(PageBase):
 
     def _filter(self) -> None:
         q = self.search.text().strip().lower()
-        for it in self._items:
-            it.setHidden(False)
-        if not q:
-            return
-        def match(i: int) -> bool:
-            e = self.elements[i]
-            return q in f"{e.name} {e.control_type} {e.selector.auto_id} {e.suggested_kind}".lower()
-        keep = set()
-        for i, e in enumerate(self.elements):
-            if match(i):
-                j: int | None = i
-                while j is not None and j not in keep:
-                    keep.add(j); j = self.elements[j].parent
-        for i, it in enumerate(self._items):
-            it.setHidden(i not in keep)
+        keep: set[int] | None = None
+        if q:
+            keep = set()
+            for i, e in enumerate(self.elements):
+                if q in f"{e.name} {e.control_type} {e.selector.auto_id} {e.suggested_kind}".lower():
+                    j: int | None = i
+                    while j is not None and j not in keep:
+                        keep.add(j); j = self.elements[j].parent
+        self.tree.setUpdatesEnabled(False)
+        try:
+            for i, it in enumerate(self._items):
+                hide = keep is not None and i not in keep
+                try:
+                    if it.isHidden() != hide:                 # only touch rows whose state changes
+                        it.setHidden(hide)
+                except RuntimeError:                          # the item was deleted under us: the list is stale
+                    self._items = []
+                    return
+        finally:
+            self.tree.setUpdatesEnabled(True)
 
     # ---- details
     def _select(self, cur, _prev) -> None:

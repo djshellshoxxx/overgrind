@@ -1,10 +1,12 @@
 """Shared helpers for the offscreen GUI tests (not itself a test module)."""
+import faulthandler
 import os
 import tempfile
 import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+faulthandler.enable()          # a native Qt crash prints the Python stack instead of dying silently
 _SETTINGS = tempfile.mkdtemp(prefix="ovg-settings-")
 os.environ["OVERGRIND_SETTINGS_DIR"] = _SETTINGS
 os.environ["OVERGRIND_DATA"] = tempfile.mkdtemp(prefix="ovg-data-")
@@ -63,5 +65,11 @@ class GuiCase(unittest.TestCase):
                 w.close()
             except Exception:
                 pass
+        pump(timeout=0.05)
+        try:                                           # no background scan/preflight may deliver into a closed window
+            from overgrind.gui.workers import HOST
+            HOST.wait_tasks(5000)
+        except Exception:
+            pass
         pump(timeout=0.05)
         QMessageBox.question = self._orig_q

@@ -2,7 +2,15 @@
 
 **Scope: General-purpose Windows desktop GUI software, regardless of application domain or UI framework (subject to accessible controls and automation constraints).** [Competitive differentiation and product scope](docs/strategy/windows-gui-fuzzing-differentiation.md).
 
-**Product direction:** [Continuous Standalone GUI Fuzzing v0.2 specification](docs/specs/continuous-gui-fuzzing-v0.2.md). The goal is an independent Windows GUI application allowing users to select a target, define each feature's default state, limit control ranges, run indefinitely by default, and persist only errors. **This is planned, not yet available.** The current v0.1 CLI remains a finite ordered-pair prototype.
+**v0.2 (this branch): standalone GUI + continuous fuzzing engine.** Select a target, teach Overgrind its features and controls, run until you stop it, and only failures are saved. See [STATUS](docs/STATUS.md) for exactly what is implemented, verified and still open, the [v0.2 spec](docs/specs/continuous-gui-fuzzing-v0.2.md), the [architecture](docs/specs/architecture-v0.2.md) and the [feature specs](docs/specs/features/).
+
+    python -m pip install -e ".[gui,windows]"
+    python -m overgrind.gui --demo        # explore the GUI with a built-in mock target
+    python -m overgrind v2 run --project my.ovg.json --evidence errors/   # headless
+
+Unique features: Feature-State Atlas (honest coverage ledger), Trust Ledger + preflight (provenance, danger guard), Auto-Reduce Reproducer, Dependency Inference, Differential Twin-Build; improved popular features: smart selector inspector, streaming constraint-aware t-wise generation. Windows builds come from the *Windows build* GitHub Actions workflow (artifact `Overgrind-windows-x64`).
+
+The v0.1 CLI below (finite ordered-pair campaigns) still works unchanged.
 
 Overgrind is an extensible, deterministic **GUI feature-combination fuzzing and stress-test runner**. It inventories exposed controls, models each control's permitted input domain, and tests every *ordered* pair of main application features with randomized values.
 
