@@ -539,16 +539,17 @@ def _check_control(adapter: Any, c: ControlDef, elements: list[ElementInfo], ctx
                 adapter.set_control(c, c.default)
             except Exception:                                          # noqa: BLE001
                 pass
-        okn = sum(_same(g, v) for v, g in results)
-        if okn == len(results):
-            it.add("read-back", "ok", f"default {show(c.default)} reads back; {len(results)} values round-trip", "P06")
+        probes = results[:-1]                      # low/mid/high; the last entry is the default write (restore)
+        okn = sum(_same(g, v) for v, g in probes)
+        if okn == len(probes):
+            it.add("read-back", "ok", f"default {show(c.default)} reads back; {len(probes)} values round-trip", "P06")
         elif okn == 0:
-            v, g = results[-1]
+            v, g = probes[-1]
             it.add("read-back", "fail", f"set {show(v)} but read {show(g)}", "P06")
             it.hints.append(f'the app clamps/ignores this value; fix "default" for {c.id} or narrow its "fuzz_domain"')
             it.fix("skip_control", c.id, True, "skip this control")
         else:
-            wrong = [(v, g) for v, g in results if not _same(g, v)]
+            wrong = [(v, g) for v, g in probes if not _same(g, v)]
             v, g = wrong[0]
             it.add("read-back", "warn", f"set {show(v)} but read {show(g)} (clamped)", "P06")
             gots = [g for _, g in results if _num(g)]

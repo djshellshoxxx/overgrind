@@ -212,6 +212,7 @@ class InspectPage(PageBase):
         if 0 <= i < len(self._items):
             self.search.clear()
             self.tree.setCurrentItem(self._items[i]); self.tree.scrollToItem(self._items[i])
+            self._sync_overlay()
             self.status.setText(f"Picked: {self.elements[i].name or self.elements[i].control_type}")
 
     def current_element(self) -> ElementInfo | None:

@@ -22,7 +22,7 @@ from ..types import (
 
 
 if False:  # pragma: no cover - never runs; lets PyInstaller's static analysis see modules imported by name below
-    from .. import (constraints, controller, diffrun, domain, evidence, infer, planning, preflight, project, reduce,  # noqa: F401
+    from .. import (constraints, controller, diffrun, domain, evidence, infer, planning, preflight, project, reduce, selectors,  # noqa: F401
                     scheduler, states, watchdog, worker)
     from ..adapters import mock as _a_mock, procwatch as _a_procwatch, resolve as _a_resolve, uia as _a_uia  # noqa: F401
     from ..strategies import (adaptive as _s_adaptive, boundary as _s_boundary, chaos as _s_chaos,  # noqa: F401
@@ -542,9 +542,12 @@ def exe_factory(spec: AdapterSpec, exe_path: str) -> Callable[[], Any]:
 
 
 def differential(project: Project, a: AdapterSpec, b: AdapterSpec, n_cases: int = 20, seed: int = 1,
-                 factory_a=None, factory_b=None):
+                 factory_a=None, factory_b=None, id_map=None):
+    kw = {}
+    if id_map is not None:
+        kw["id_map"] = id_map
     return _fn("diffrun", "differential")(project, a, b, n_cases=n_cases, seed=seed,
-                                          factory_a=factory_a, factory_b=factory_b)
+                                          factory_a=factory_a, factory_b=factory_b, **kw)
 
 
 def inspect_build(spec: AdapterSpec, factory, project: Project) -> list[ElementInfo]:
@@ -848,7 +851,7 @@ def map_controls(project: Project, elems_a: list[ElementInfo], elems_b: list[Ele
                         best, second, bi = s, best, j
                     elif s > second:
                         second = s
-            status = "unmatched" if bi is None or best < 0.45 else ("mapped" if best >= 0.85 and best - second >= 0.15 else "review")
+            status = "unmatched" if bi is None or best < 0.45 else ("mapped" if best >= 0.85 and (best - second >= 0.15 or (best >= 0.99 and second < 0.99)) else "review")
             nm = getattr(it, "name", "") or it.id
             rows.append({"id": it.id, "kind": kind, "name": nm, "a": describe_selector(sel),
                          "b": (elems_b[bi].name or describe_selector(elems_b[bi].selector)) if bi is not None else "",

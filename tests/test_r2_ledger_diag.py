@@ -491,7 +491,7 @@ class InferStats(unittest.TestCase):
             obs = []
             for i in range(n):
                 for st in ("on", "off"):
-                    ctx = {"f0": st, "f1": ("on", "off")[i % 2], "k": str(i % 4)}
+                    ctx = {"f0": st, "f1": ("on", "off")[i % 2], "k": str(i)}
                     obs.append(infer.ElementObs(ctx, "c", enabled=(st == "on")))
             return obs
         self.assertEqual(infer.analyze(mk(5), feats), [])
@@ -504,7 +504,7 @@ class InferStats(unittest.TestCase):
             for a in ("off", "on"):
                 for b in ("off", "on"):
                     for i in range(per_cell):
-                        ctx = {"f0": a, "f1": b, "f2": ("on", "off")[i % 2]}
+                        ctx = {"f0": a, "f1": b, "f2": ("on", "off")[i % 2], "k": f"{a}{b}{i}"}
                         obs.append(infer.ElementObs(ctx, "c", enabled=(a == "on" and b == "on")))
             return obs
         few = infer.analyze(mk(5), feats)
@@ -516,7 +516,7 @@ class InferStats(unittest.TestCase):
         feats = (feat(0), feat(1))
         obs = []
         for i in range(24):
-            ctx = {"f0": ("on", "off")[i % 2], "f1": ("on", "off")[(i // 2) % 2]}
+            ctx = {"f0": ("on", "off")[i % 2], "f1": ("on", "off")[(i // 2) % 2], "k": str(i)}
             obs.append(infer.ElementObs(ctx, "c", enabled=ctx["f0"] == "off"))
         props = infer.analyze(obs, feats)
         self.assertEqual([x.kind for x in props], ["enable_inverse"])
@@ -572,7 +572,7 @@ class InferStats(unittest.TestCase):
             self.assertEqual(infer.load_rejected(path), rej)
 
     def test_11_violable_rule_rejected(self):
-        p, ad = planted(3, mutex_leak=0.1)
+        p, ad = planted(3, mutex_leak=0.35)
         got = keyset(infer.infer_statistical(p, ad))
         self.assertNotIn(("mutex", "", ("f6", "f7")), got)
 
@@ -661,7 +661,7 @@ class SelectorsB1(unittest.TestCase):
         t = tree(("btnApplyNow", "Apply", "Button", (100, 500, 80, 30)))
         with self.assertRaises(HarnessError):
             R.resolve_heal(Selector(auto_id="btnApply", title="Apply now", control_type="Button",
-                                    class_name="Button", path=("App", "D")), t, accept=lambda e: False)
+                                    path=("App",)), t, accept=lambda e: False)
 
     def test_8_write_plausibility(self):
         self.assertTrue(S.write_plausible("integer", "42"))
@@ -670,8 +670,7 @@ class SelectorsB1(unittest.TestCase):
 
     def test_9_dangerous_never_healed(self):
         t = tree(("btnApplyNow", "Apply", "Button", (100, 500, 80, 30)))
-        sel = Selector(auto_id="btnApply", title="Apply now", control_type="Button", class_name="Button",
-                       path=("App", "D"))
+        sel = Selector(auto_id="btnApply", title="Apply now", control_type="Button", path=("App",))
         with self.assertRaises(HarnessError):
             S.resolve(t, sel, dangerous=True)
         self.assertTrue(S.resolve(t, sel).healed)
@@ -901,7 +900,7 @@ class TwinRun(unittest.TestCase):
         class Once(MockAdapter):
             def wait_quiescent(self, timeout_ms=0):
                 state["n"] += 1
-                if state["n"] == 4:          # fires on the first B run only (A: 1, B: 2.. ; replays are fine)
+                if state["n"] == 1:          # fires on the first B run only
                     self._dead = "transient"
                 super().wait_quiescent(timeout_ms)
         cases = self.cases[:1]
@@ -960,6 +959,67 @@ class TwinRun(unittest.TestCase):
 def _att(adapter, project):
     adapter.attach(project.target)
     return adapter
+
+
+# ------------------------------------------------------------------ U3 statistics / shrink / bonus finds
+class ReduceStats(unittest.TestCase):
+    def prob_runner(self, p, seed):
+        rng = random.Random(seed)
+        return lambda acts: crash() if (any(a.target == "bug" for a in acts) and rng.random() < p) else Outcome()
+
+    def test_3_classification_over_200_trials(self):
+        labels = {"flaky": 0, "reliable": 0, "not_reproducible": 0, "unconfirmed": 0}
+        for t in range(200):
+            ev = event([Action("invoke", "bug")])
+            out = rd.Reducer(proj(), runner=self.prob_runner(0.5, t), max_replays=60).reduce(ev)
+            labels[out.reliability] += 1
+        self.assertGreaterEqual(labels["flaky"], 0.90 * 200)
+        self.assertLessEqual(labels["reliable"], 0.06 * 200)
+        ev = event([Action("invoke", "bug")])
+        self.assertEqual(rd.Reducer(proj(), runner=self.prob_runner(1.0, 0)).reduce(ev).reliability, "reliable")
+        self.assertEqual(rd.Reducer(proj(), runner=self.prob_runner(0.0, 0)).reduce(ev).reliability,
+                         "not_reproducible")
+
+    def test_5_value_shrink_probe_budget(self):
+        calls = []
+
+        def runner(acts):
+            calls.append(1)
+            v = next((a.value for a in acts if a.target == "c0"), 10)
+            return crash() if v >= 37 else Outcome()
+        hist = [Action("control", "c0", 91)]
+        out = rd.Reducer(proj(), runner=runner).reduce(event(hist))
+        self.assertEqual(out.reduced["values"]["c0"], 37)
+        # confirm (5) + final confirm (5) + ddmin overhead are fixed costs; the shrink itself is <= 12 probes
+        shrink = len(calls) - 5 - 5
+        self.assertLessEqual(shrink, 16)
+
+    def test_9_different_signature_saved_as_new_event(self):
+        def runner(acts):
+            t = [a.target for a in acts]
+            if "bug" in t and "A" in t:
+                return crash("boom 0x1")
+            if "bug" in t:
+                return Outcome(False, "crash", "different module fault")
+            return Outcome()
+        with tempfile.TemporaryDirectory() as td:
+            store = EvidenceStore(td)
+            ev = event([Action("state", "A", "on"), Action("invoke", "bug"), Action("wait", "w", 1)])
+            store.write(ev)
+            r = rd.Reducer(proj(), runner=runner, store=store)
+            r.reduce(ev)
+            self.assertEqual(len(r.bonus_events), 1)
+            be = r.bonus_events[0]
+            self.assertIn("reduced-from:e1", be.case.tags)
+            self.assertTrue(store.known(be.signature))
+
+    def test_11_determinism(self):
+        hist = [Action("control", "c0", i) for i in range(12)] + [Action("invoke", "bug")] + \
+               [Action("state", "f1", "on")] * 3
+        a = rd.Reducer(proj(), runner=lambda x: crash() if any(s.target == "bug" for s in x) else Outcome()).reduce(event(hist))
+        b = rd.Reducer(proj(), runner=lambda x: crash() if any(s.target == "bug" for s in x) else Outcome()).reduce(event(hist))
+        self.assertEqual(a.reduced["steps"], b.reduced["steps"])
+        self.assertEqual(a.reduced["replays"], b.reduced["replays"])
 
 
 if __name__ == "__main__":

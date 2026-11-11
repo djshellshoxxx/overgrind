@@ -85,18 +85,23 @@ def _jaccard(a: Sequence[str], b: Sequence[str]) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
+def _sharp(x: float) -> float:
+    """Jaro-Winkler gives ~0.5 to unrelated strings; rescale so only real similarity counts."""
+    return max(0.0, (x - 0.6) / 0.4)
+
+
 def _id_sim(a: str, b: str) -> float:
     if a == b:
         return 1.0
     ta, tb = tokens(a), tokens(b)
-    return max(jaro_winkler(" ".join(ta), " ".join(tb)), _jaccard(ta, tb))
+    return max(_sharp(jaro_winkler(" ".join(ta), " ".join(tb))), _jaccard(ta, tb))
 
 
 def _title_sim(a: str, b: str) -> float:
     na, nb = normalize_title(a), normalize_title(b)
     if na == nb:
         return 1.0 if na else 0.0
-    return max(_jaccard(na.split(), nb.split()), jaro_winkler(na, nb))
+    return max(_jaccard(tokens(na), tokens(nb)), _sharp(jaro_winkler(na, nb)))
 
 
 def _path_sim(a: Sequence[str], b: Sequence[str]) -> float:

@@ -171,6 +171,8 @@ def resolve_heal(selector: Selector, elements: Sequence[ElementInfo], *, allow_h
     from ..types import HarnessError
     res = resolve(selector, elements)
     if res.found and not (res.ambiguous and selector.index is None):
+        if accept is not None and not accept(elements[res.index]):
+            raise HarnessError("selector resolves to an element outside the target (owner check failed)")
         return res
     if res.ambiguous and selector.index is None and not allow_heal:
         names = ", ".join(f"#{i}:{elements[i].name or elements[i].selector.auto_id!r}" for i in res.candidates[:8])

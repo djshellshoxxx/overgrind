@@ -225,8 +225,11 @@ class Widgets(GuiCase):
         from overgrind.gui.dialogs import CompareDialog
         d = CompareDialog(demo_project()); d.show()
         d.n.setValue(12)
+        d.review()                                           # step 2: how controls are matched
+        self.assertTrue(pump(lambda: d.stack.currentIndex() == 1, 60), d.status.text())
+        self.assertGreater(d.table.rowCount(), 0)
         d.compare()
-        self.assertTrue(pump(lambda: d.go.isEnabled(), 60))
+        self.assertTrue(pump(lambda: d.stack.currentIndex() == 2 or "could not run" in d.status.text(), 120), d.status.text())
         self.assertTrue(d.out.toPlainText(), d.status.text())
         self.assertNotIn("could not run", d.status.text())
 

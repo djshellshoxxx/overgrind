@@ -294,6 +294,8 @@ class Reducer:
         self._cancelled = False
         self._unresolved = 0
         self._orig_key: tuple = ()
+        self._bonus: dict[str, tuple[Outcome, list]] = {}
+        self.bonus_events: list[ErrorEvent] = []
 
     def _progress(self, phase: str) -> None:
         if self.on_progress is None:
@@ -327,6 +329,14 @@ class Reducer:
         self._progress("replay")
         return out
 
+    def _note_other(self, out: Outcome, actions: list) -> None:
+        """A different-signature failure met during reduction is a bonus find: remember one per signature."""
+        if out.ok or out.category == "harness" or self._same(out):
+            return
+        sig = outcome_fingerprint(out)
+        if sig != self._target_sig and sig not in self._bonus and len(self._bonus) < 20:
+            self._bonus[sig] = (out, list(actions))
+
     def _valid(self, actions: list) -> bool:
         """Candidates that violate a project constraint are UNRESOLVED (never accepted, never replayed)."""
         if self._ng is None:
@@ -343,7 +353,9 @@ class Reducer:
             self._unresolved += 1
             self._cache[key] = False
         if key not in self._cache:
-            res = self._same(self._replay(actions))
+            out0 = self._replay(actions)
+            res = self._same(out0)
+            self._note_other(out0, actions)
             tries = 0
             while not res and tries < self._neg_retries:      # flaky: a miss is weak evidence, retry it
                 tries += 1
@@ -361,9 +373,10 @@ class Reducer:
         return history, True
 
     def _confirm(self, orig: list, event: ErrorEvent) -> list[Outcome]:
-        """Replay the failing sequence: n0 = max(confirm_runs, 3); no repro -> 5 (10 for hang/resource);
+        """Replay the failing sequence: n0 = max(confirm_runs, 5) (spec plan; reliable needs n>=3 but p>=0.55 at n=5); no repro -> 5 (10 for hang/resource);
         mixed -> 10. Harness errors are not counted (retried at most twice in total)."""
         results: list[Outcome] = []
+        self._conf_results = results
         harness = 0
 
         def until(n: int) -> bool:
@@ -382,7 +395,7 @@ class Reducer:
                         self._baseline_sig = sig
             return True
 
-        if not until(max(self.confirm_runs, 3)):
+        if not until(max(self.confirm_runs, 5)):
             return results
         r = sum(self._same(o) for o in results)
         if r == 0:
@@ -423,6 +436,7 @@ class Reducer:
                 steps, final = self._final_confirm(steps, orig, reliability)
         except BudgetExceeded:
             exhausted = True
+            results = list(getattr(self, "_conf_results", results))
             repro = [self._same(o) for o in results]
             reliability = classify_reliability(repro) if repro else "unconfirmed"
             steps = self._best or orig
@@ -450,7 +464,14 @@ class Reducer:
             new.env = dict(new.env)
             new.env["reliability"] = {"n": n, "r": k, "p_lo": round(reproduce_lower_bound(k, n), 4),
                                       "p_hi": round(reproduce_upper_bound(k, n), 4), "level": 0.95}
+        self.bonus_events = self._make_bonus(event)
         if self.store is not None:
+            for be in self.bonus_events:
+                try:
+                    if not self.store.known(be.signature):
+                        self.store.write(be)
+                except Exception:                           # noqa: BLE001
+                    pass
             try:
                 path = self.store.write_reduced(event, reduced)
                 new.attachments = dict(new.attachments)
@@ -494,7 +515,11 @@ class Reducer:
             progressed = True
             while progressed:
                 progressed = False
-                for cand_v in shrink_candidates(steps[i].value, default):
+                cands = shrink_candidates(steps[i].value, default)
+                if (isinstance(steps[i].value, (int, float)) and not isinstance(steps[i].value, bool)
+                        and isinstance(default, (int, float)) and not isinstance(default, bool)):
+                    cands = cands[:1]            # numbers: default, then the binary search below (<= ~12 probes)
+                for cand_v in cands:
                     cand = steps[:i] + [replace(steps[i], value=cand_v)] + steps[i + 1:]
                     if self._test(cand):
                         steps = cand
@@ -521,6 +546,15 @@ class Reducer:
                     else:
                         lo = mid
         return steps
+
+    def _make_bonus(self, event: ErrorEvent) -> list[ErrorEvent]:
+        out = []
+        for sig, (o, acts) in self._bonus.items():
+            case = replace(event.case, tags=(*event.case.tags, f"reduced-from:{event.id}"))
+            out.append(ErrorEvent(id=f"{event.id}-b{len(out) + 1}", ts=event.ts, run_id=event.run_id,
+                                  category=o.category, signature=sig, message=o.message, case=case,
+                                  history=list(acts), env=dict(event.env)))
+        return out
 
     def _save_partial(self) -> None:
         """Persist the last accepted candidate (atomic) so cancel/crash keeps real progress."""

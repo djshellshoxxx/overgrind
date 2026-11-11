@@ -99,6 +99,7 @@ class RunPage(PageBase):
         self.revalidate = None            # set by the main window: re-runs project.validate() right now
         self._rank_cache: tuple | None = None      # (project id, table) rank -> state
         self._rank_job: int | None = None
+        self._latest: RunStats | None = None
         self._pair_sig: tuple | None = None
         self._acked = ""                  # project fingerprint the tester already confirmed risks for
 
@@ -288,6 +289,7 @@ class RunPage(PageBase):
         self.state_label.setStyleSheet(f"color:{theme.sem_hex('fail')};")
 
     def on_stats(self, st: RunStats) -> None:
+        self._latest = st
         self.state_label.setStyleSheet("")
         self.t_elapsed.set(fmt_time(st.elapsed_s)); self.t_cases.set(f"{st.cases:,}"); self.t_rate.set(f"{st.cases_per_s:,.1f}")
         self.t_errors.set(f"{st.errors_unique:,}"); self.t_crash.set(f"{st.crashes:,}"); self.t_hang.set(f"{st.hangs:,}")
@@ -378,7 +380,8 @@ class RunPage(PageBase):
 
                 def done(table, proj=proj):
                     self._rank_job = None; self._rank_cache = (proj, table)
-                    self.on_stats(self.session.last_stats)
+                    if self._latest is not None:
+                        self.on_stats(self._latest)
                 def fail(_m):
                     self._rank_job = None; self._rank_cache = (proj, [])
                 run_async(lambda: backend.state_rank_table(proj, min(len(counts), backend.MAX_RANKED_STATES)), done, fail)
@@ -398,8 +401,8 @@ class RunPage(PageBase):
         self.views.setCurrentIndex(1 if pairs else 0)
         self._pair_sig = None
         if pairs:
-            self._ranked_visits(self.session.last_stats.coverage)
-            self._pair_view(self.session.last_stats.coverage)
+            self._ranked_visits((self._latest or self.session.last_stats).coverage)
+            self._pair_view((self._latest or self.session.last_stats).coverage)
 
     def _pair_view(self, cv) -> None:
         if not self.view_pairs.isChecked():
