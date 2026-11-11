@@ -414,6 +414,18 @@ class WideFontLayout(GuiCase):
         found = [f for f in wanted if f in have]
         return found[:4] or [QApplication.instance().font().family()]
 
+    @staticmethod
+    def _widest(page, limit=6):
+        """Diagnostics for a failing overflow assertion: the children with the largest minimum widths."""
+        from PySide6.QtWidgets import QWidget
+        rows = []
+        for ch in page.scroll.widget().findChildren(QWidget):
+            m = ch.minimumSizeHint().width()
+            rows.append((m, type(ch).__name__, ch.objectName() or ch.accessibleName(), ch.sizeHint().width(),
+                         ch.sizePolicy().horizontalPolicy().name))
+        rows.sort(reverse=True)
+        return rows[:limit]
+
     def test_no_horizontal_overflow_and_small_min_width_with_wide_fonts(self):
         from PySide6.QtGui import QFont
         app = QApplication.instance()
@@ -427,7 +439,8 @@ class WideFontLayout(GuiCase):
                     w.model.set_target(dc.replace(w.model.project.target, process_name="x" * 400 + ".exe"))
                     for i in range(7):
                         w.go_to(i); pump(timeout=0.05)
-                        self.assertEqual(w.pages[i].scroll.horizontalScrollBar().maximum(), 0, f"{fam} {pt}: overflow on page {i}")
+                        self.assertEqual(w.pages[i].scroll.horizontalScrollBar().maximum(), 0,
+                                         f"{fam} {pt}: overflow on page {i}; widest children: {self._widest(w.pages[i])}")
                         self.assertLessEqual(w.minimumSizeHint().width(), 900, f"{fam} {pt}: window minimum width on page {i}")
                     w.close()
         finally:
