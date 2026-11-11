@@ -136,8 +136,13 @@ class PlanPage(PageBase):
         self.body.addWidget(QLabel("<b>Results: Trust Ledger</b> (preflight check)"))
         self.pre_status = muted("Not run yet. The check finds every element we will touch and tells you if we can reliably find and drive it.")
         self.body.addWidget(self.pre_status)
-        self.ledger = QTableWidget(0, 4); self.ledger.setHorizontalHeaderLabels(["Result", "Element", "What we found", "How to fix"])
+        self.ledger = QTableWidget(0, 5); self.ledger.setHorizontalHeaderLabels(["Result", "Element", "What we found", "How to fix", "Actions"])
+        self.ledger.setAccessibleName("Trust Ledger")
         self._table_style(self.ledger, 2, 3); self.ledger.setVisible(False)
+        self.ledger.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive); self.ledger.setColumnWidth(4, 190)
+        self._ledger_rows: list[dict] = []
+        self._ledger_btns: dict[int, list[QPushButton]] = {}
+        self._rechecking: int | None = None
         self.body.addWidget(self.ledger)
         self.body.addStretch(1)
 
@@ -304,23 +309,18 @@ class PlanPage(PageBase):
         self.show_below(self.pre_status)
 
     def _pre_fail(self, msg: str) -> None:
-        self.btn_pre.setEnabled(True); self.ledger.setVisible(False)
+        self.btn_pre.setEnabled(True); self.ledger.setVisible(False); self._rechecking = None
         self.pre_status.setText(f"The preflight check could not run. {msg}")
 
     def _pre_done(self, rows: list[dict], fingerprint: str | None = None) -> None:
         self.btn_pre.setEnabled(True)
+        was = self._rechecking
+        before = self._ledger_rows[was] if was is not None and was < len(self._ledger_rows) else None
+        self._rechecking = None
         self.model.set_preflight(rows, fingerprint if fingerprint is not None else self.model.fingerprint())
-        label = {"ok": "OK", "warn": "Warning", "fail": "Fail"}
-        self.ledger.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            st = row["status"]
-            it = QTableWidgetItem(label[st]); it.setIcon(theme.glyph(st, theme.sem(st)))
-            self.ledger.setItem(r, 0, it)
-            for col, key in ((1, "element"), (2, "message"), (3, "hint")):
-                self.ledger.setItem(r, col, QTableWidgetItem(row[key]))
-        self.ledger.setVisible(bool(rows)); self.ledger.resizeRowsToContents()
+        self._fill_ledger(rows)
         self.show_below(self.pre_status)
-        n = {k: sum(1 for x in rows if x["status"] == k) for k in label}
+        n = {k: sum(1 for x in rows if x["status"] == k) for k in ("ok", "warn", "fail")}
         if not rows:
             self.pre_status.setText("Nothing to check yet. Add features and controls first.")
         elif n["fail"]:
@@ -330,3 +330,61 @@ class PlanPage(PageBase):
             self.pre_status.setText(f"No blocking problems. {n['warn']} warning(s) may make some steps unreliable. ({n['ok']} OK)")
         else:
             self.pre_status.setText(f"All {n['ok']} checks passed.")
+        if before is not None:
+            now = next((r for r in rows if r.get("element") == before.get("element")), None)
+            word = {"ok": "OK", "warn": "Warning", "fail": "Fail"}
+            if now is not None:
+                self.pre_status.setText(f"Re-checked {before['element']}: {word[before['status']]} before, {word[now['status']]} now. " + self.pre_status.text())
+
+    # ---- Trust Ledger rows: result, what we found, how to fix, and the fix / re-check buttons
+    def _fill_ledger(self, rows: list[dict]) -> None:
+        label = {"ok": "OK", "warn": "Warning", "fail": "Fail"}
+        self._ledger_rows = list(rows)
+        self._ledger_btns = {}
+        self.ledger.clearContents()
+        self.ledger.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            st = row["status"]
+            it = QTableWidgetItem(label[st]); it.setIcon(theme.glyph(st, theme.sem(st)))
+            self.ledger.setItem(r, 0, it)
+            for col, key in ((1, "element"), (2, "message"), (3, "hint")):
+                self.ledger.setItem(r, col, QTableWidgetItem(row[key]))
+            w, btns = self._action_cell(r, row)
+            self.ledger.setCellWidget(r, 4, w)
+            self._ledger_btns[r] = btns
+        self.ledger.setVisible(bool(rows)); self.ledger.resizeRowsToContents()
+        for r in range(len(rows)):
+            w = self.ledger.cellWidget(r, 4)
+            if w is not None:
+                self.ledger.setRowHeight(r, max(self.ledger.rowHeight(r), w.sizeHint().height() + 6))
+
+    def _action_cell(self, r: int, row: dict):
+        w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(2, 2, 2, 2); lay.setSpacing(3)
+        btns: list[QPushButton] = []
+        for fx in row.get("fixes") or []:
+            b = QPushButton(backend.fix_button_text(fx))
+            b.setToolTip(fx.get("label") or backend.fix_button_text(fx))
+            b.setAccessibleName(f"{backend.fix_button_text(fx)} for {row['element']}")
+            b.clicked.connect(lambda _c=False, r=r, fx=fx, b=b: self.apply_ledger_fix(r, fx, b))
+            lay.addWidget(b); btns.append(b)
+        rc = QPushButton("Re-check")
+        rc.setToolTip("Run the preflight check again, for example after you changed something in the program or applied a fix.")
+        rc.setAccessibleName(f"Re-check {row['element']}")
+        rc.clicked.connect(lambda _c=False, r=r: self.recheck_row(r))
+        lay.addWidget(rc); btns.append(rc)
+        return w, btns
+
+    def apply_ledger_fix(self, r: int, fx: dict, button: QPushButton | None = None) -> None:
+        """Apply one structured fix to the project (undoable), then ask for a re-check."""
+        self.model.edit("Preflight fix: " + backend.fix_button_text(fx), lambda p, fx=fx: backend.apply_fix(p, fx))
+        if button is not None:
+            button.setEnabled(False); button.setText("Applied")
+        self.pre_status.setText(f"Applied: {backend.fix_button_text(fx)}. Press Re-check to confirm it worked (Ctrl+Z undoes it).")
+
+    def recheck_row(self, r: int) -> None:
+        if r >= len(self._ledger_rows) or self._rechecking is not None:
+            return
+        self._rechecking = r
+        for b in self._ledger_btns.get(r, []):
+            b.setEnabled(False)
+        self.run_preflight()

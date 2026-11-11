@@ -6,7 +6,7 @@ from typing import Callable
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QStackedWidget, QStyledItemDelegate, QTableView,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QStackedWidget, QStyledItemDelegate, QTableView, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -162,6 +162,7 @@ class FeaturesPage(PageBase):
         self.body.addWidget(self.empty)
         row = QHBoxLayout()
         self.btn_add = QPushButton("Add feature manually"); self.btn_del = QPushButton("Remove selected")
+        self._rejected: dict[str, int] = {}
         self.btn_suggest = QPushButton("Suggest dependencies...")
         self.btn_suggest.setToolTip("Toggles features one at a time (and puts them back) to find rules you might have missed.")
         row.addWidget(self.btn_add); row.addWidget(self.btn_del); row.addStretch(1); row.addWidget(self.btn_suggest)
@@ -333,7 +334,7 @@ class FeaturesPage(PageBase):
         self.btn_suggest.setEnabled(False)
         self.sug_status.setText("Watching how the app reacts... we switch features one at a time and put everything back.")
         proj, spec = self.model.project, self.model.adapter_spec
-        run_async(lambda: backend.suggest_dependencies(proj, spec), self._got, self._fail)
+        run_async(lambda: backend.suggest_dependencies(proj, spec, rejected=dict(self._rejected)), self._got, self._fail)
 
     def _fail(self, msg: str) -> None:
         self.btn_suggest.setEnabled(True)
@@ -345,31 +346,135 @@ class FeaturesPage(PageBase):
             self.sug_status.setText("No dependencies found. Nothing changed when we toggled features, so no rules are suggested.")
             return
         self.sug_status.setText(f"{len(props)} suggestion(s) found.")
-        dlg = SuggestDialog(props, self)
+        self.suggest_dialog = dlg = SuggestDialog(props, self, retest=self._retest, rejected=self._rejected)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             for p in dlg.accepted():
                 self.model.edit("Accept suggested rule", lambda proj, p=p: p.apply(proj))
+            self.sug_status.setText(f"{len(dlg.accepted())} rule(s) accepted, {len(dlg.rejected_rows())} rejected.")
+
+    def _retest(self, row: dict, done, fail) -> None:
+        """Run the observation again off the UI thread; `done(rows)` gets the new proposals."""
+        proj, spec = self.model.project, self.model.adapter_spec
+        run_async(lambda: backend.suggest_dependencies(proj, spec, rejected=None), done, fail)
 
 
 class SuggestDialog(QDialog):
-    def __init__(self, props: list[dict], parent=None):
+    """Review table: one row per hypothesis with its evidence, a confidence badge and Accept / Reject / Test again."""
+    HEAD = ["Suggestion", "Evidence", "Confidence", "Effect on testing", "Decision"]
+
+    def __init__(self, props: list[dict], parent=None, retest=None, rejected: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Suggested dependencies")
-        self.resize(560, 360)
+        self.resize(760, 460)
+        self.retest = retest
+        self.rejected = rejected if rejected is not None else {}
+        self.rows: list[dict] = [dict(p, decision="pending") for p in props]
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("We noticed these relationships. Tick the ones that are right and press Accept. Nothing is changed until you accept."))
-        self.list = QListWidget()
-        for p in props:
-            it = QListWidgetItem(f"{p['text']}   [{theme.CONFIDENCE.get(p['confidence'], theme.CONFIDENCE['inferred'])[0]}, seen {p.get('evidence', '?')}x]")
-            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable); it.setCheckState(Qt.CheckState.Unchecked)
-            it.setData(Qt.ItemDataRole.UserRole, p["proposal"])
-            self.list.addItem(it)
-        lay.addWidget(self.list)
-        bb = QDialogButtonBox(); self.ok = bb.addButton("Accept ticked", QDialogButtonBox.ButtonRole.AcceptRole)
-        bb.addButton("Reject all", QDialogButtonBox.ButtonRole.RejectRole)
+        banner = QLabel("<b>These are guesses, not facts.</b> Accepting a wrong one hides real states from testing. "
+                        "Nothing is changed until you press <b>Apply accepted</b>.")
+        banner.setWordWrap(True); banner.setTextFormat(Qt.TextFormat.RichText); lay.addWidget(banner)
+        self.table = QTableWidget(0, len(self.HEAD)); self.table.setHorizontalHeaderLabels(self.HEAD)
+        self.table.setAccessibleName("Suggested dependencies")
+        self.table.verticalHeader().setVisible(False); self.table.setWordWrap(True)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        h = self.table.horizontalHeader(); h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch); h.setStretchLastSection(False)
+        for c, w in ((1, 130), (2, 110), (3, 130), (4, 150)):
+            self.table.setColumnWidth(c, w)
+        lay.addWidget(self.table, 1)
+        self.status = QLabel(""); self.status.setWordWrap(True); lay.addWidget(self.status)
+        bb = QDialogButtonBox()
+        self.ok = bb.addButton("Apply accepted", QDialogButtonBox.ButtonRole.AcceptRole)
+        bb.addButton("Close without applying", QDialogButtonBox.ButtonRole.RejectRole)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+        self._fill()
 
+    # -- data
     def accepted(self):
-        return [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())
-                if self.list.item(i).checkState() == Qt.CheckState.Checked]
+        return [r["proposal"] for r in self.rows if r["decision"] == "accepted"]
+
+    def rejected_rows(self):
+        return [r for r in self.rows if r["decision"] == "rejected"]
+
+    @staticmethod
+    def evidence_text(r: dict) -> str:
+        ev, bad, q = r.get("evidence", "?"), r.get("contradictions", 0) or 0, r.get("q")
+        total = ev + bad if isinstance(ev, int) else None
+        t = f"{ev}/{total} trials agree" if total else f"seen {ev}x"
+        if q is not None and q < 1.0:
+            t += f", q={q:.3g}"
+        return t
+
+    @staticmethod
+    def effect_text(r: dict) -> str:
+        imp = r.get("impact") or {}
+        if imp.get("valid_before") is not None and imp.get("valid_after") is not None:
+            b, a = imp["valid_before"], imp["valid_after"]
+            return f"{b:,} to {a:,} states" if a != b else "No change in the number of states"
+        return "Not calculated"
+
+    def _fill(self) -> None:
+        self.table.clearContents()
+        self.table.setRowCount(len(self.rows))
+        word = {"pending": ("Not decided", "question"), "accepted": ("Accepted", "ok"), "rejected": ("Rejected", "fail")}
+        for i, r in enumerate(self.rows):
+            self.table.setItem(i, 0, QTableWidgetItem(r["text"]))
+            self.table.setItem(i, 1, QTableWidgetItem(self.evidence_text(r)))
+            badge = theme.Badge(); badge.set_confidence(r["confidence"] if r["confidence"] in theme.CONFIDENCE else "inferred")
+            self.table.setCellWidget(i, 2, badge)
+            self.table.setItem(i, 3, QTableWidgetItem(self.effect_text(r)))
+            w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(2, 2, 2, 2); v.setSpacing(3)
+            lab_text, icon = word[r["decision"]]
+            hl = QHBoxLayout(); hl.setSpacing(4)
+            ic = QLabel(); ic.setPixmap(theme.glyph_pixmap(icon, theme.sem({"ok": "ok", "fail": "fail"}.get(icon, "muted")), 14))
+            lab = QLabel(lab_text); lab.setAccessibleName(f"Decision: {lab_text}")
+            hl.addWidget(ic); hl.addWidget(lab); hl.addStretch(1); v.addLayout(hl)
+            btns = {}
+            for key, text in (("accepted", "Accept"), ("rejected", "Reject"), ("retest", "Test again")):
+                b = QPushButton(text); b.setAccessibleName(f"{text}: {r['text']}"); btns[key] = b
+                b.clicked.connect(lambda _c=False, i=i, key=key: self.decide(i, key))
+                v.addWidget(b)
+            if self.retest is None:
+                btns["retest"].setEnabled(False); btns["retest"].setToolTip("Needs a connection to the app.")
+            r["_btns"] = btns
+            self.table.setCellWidget(i, 4, w)
+            self.table.setRowHeight(i, max(w.sizeHint().height() + 6, 60))
+        n = sum(1 for r in self.rows if r["decision"] == "accepted")
+        self.ok.setEnabled(n > 0)
+        self.ok.setText(f"Apply accepted ({n})")
+
+    def decide(self, i: int, key: str) -> None:
+        r = self.rows[i]
+        if key == "retest":
+            return self._retest(i)
+        r["decision"] = key
+        if key == "rejected":
+            fp = r.get("fingerprint")
+            if fp:
+                self.rejected[fp] = int(r.get("evidence") or 0)
+        self._fill()
+
+    def _retest(self, i: int) -> None:
+        r = self.rows[i]
+        for b in r["_btns"].values():
+            b.setEnabled(False)
+        self.status.setText("Testing again: we switch the features once more and look at whether the same thing happens...")
+        fp = r.get("fingerprint")
+
+        def done(new):
+            same = next((x for x in new if x.get("fingerprint") == fp), None)
+            if same is None:
+                r["decision"] = "pending"
+                self.status.setText("It did not show up again, so the evidence is weaker. We suggest rejecting it.")
+            else:
+                keep = r.get("decision") if r.get("decision") == "accepted" else "pending"
+                r.update(same); r["decision"] = keep
+                self.status.setText(f"Tested again: {self.evidence_text(r)}.")
+            self._fill()
+
+        def fail(msg):
+            self.status.setText(f"Could not test again. {msg}")
+            self._fill()
+        self.retest(r, done, fail)

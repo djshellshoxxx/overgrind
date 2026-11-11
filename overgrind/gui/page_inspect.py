@@ -5,12 +5,13 @@ import html
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QSizePolicy, QSplitter,
+    QCheckBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QSizePolicy, QSplitter,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..types import ControlDef, Domain, ElementInfo, FeatureDef, Provenance
 from . import backend, theme
+from .overlay import BoundsOverlay, PickOverlay
 from .widgets import PageBase, StabilityMeter, empty_state, muted
 from .workers import run_async
 
@@ -30,8 +31,18 @@ class InspectPage(PageBase):
         self.search = QLineEdit(); self.search.setPlaceholderText("Search by name, type or ID (Ctrl+F)"); self.search.setClearButtonEnabled(True)
         self.search.setAccessibleName("Search elements")
         self.status = muted("", wrap=False)
-        bar.addWidget(self.btn_scan); bar.addWidget(self.search, 1); bar.addWidget(self.status)
+        ok, why = backend.overlay_supported()
+        self.btn_pick = QPushButton("Pick on screen")
+        self.btn_pick.setToolTip("Move the pointer over the program and click an element to select it here. The click is not sent to the program."
+                                 if ok else why)
+        self.btn_pick.setAccessibleDescription(self.btn_pick.toolTip())
+        self.chk_outline = QCheckBox("Outline on screen"); self.chk_outline.setChecked(True)
+        self.chk_outline.setToolTip("Draw a dashed outline around the selected element in the program." if ok else why)
+        self.btn_pick.setEnabled(ok); self.chk_outline.setEnabled(ok)
+        self.overlay = BoundsOverlay(); self._picker: PickOverlay | None = None
+        bar.addWidget(self.btn_scan); bar.addWidget(self.btn_pick); bar.addWidget(self.search, 1); bar.addWidget(self.status)
         self.body.addLayout(bar)
+        self.body.addWidget(self.chk_outline)
 
         split = QSplitter(Qt.Orientation.Horizontal); split.setChildrenCollapsible(False)
         self.tree = QTreeWidget(); self.tree.setHeaderLabels(["Element", "Type", "Looks like", "Source"])
@@ -84,6 +95,8 @@ class InspectPage(PageBase):
         self.tree.setMaximumHeight(16777215)
 
         self.btn_scan.clicked.connect(self.scan)
+        self.btn_pick.clicked.connect(self.start_pick)
+        self.chk_outline.toggled.connect(lambda _on: self._sync_overlay())
         self.search.textChanged.connect(self._filter)
         self.tree.currentItemChanged.connect(self._select)
         self.btn_feat.clicked.connect(self._add_feature)
@@ -163,6 +176,44 @@ class InspectPage(PageBase):
         idx = cur.data(0, Qt.ItemDataRole.UserRole) if cur else None
         self._show_detail(self.elements[idx] if idx is not None and idx < len(self.elements) else None)
 
+    # ---- on-screen outline and picking
+    def _sync_overlay(self) -> None:
+        e = self.current_element()
+        if e is not None and self.chk_outline.isChecked() and self.isVisible() and self.chk_outline.isEnabled():
+            self.overlay.show_bounds(e.bounds, e.name)
+        else:
+            self.overlay.clear()
+
+    def hideEvent(self, ev) -> None:
+        self.overlay.clear()
+        super().hideEvent(ev)
+
+    def showEvent(self, ev) -> None:
+        super().showEvent(ev)
+        self._sync_overlay()
+
+    def shutdown(self) -> None:
+        self.overlay.clear()
+        if self._picker is not None:
+            self._picker.hide()
+
+    def start_pick(self, force: bool = False) -> bool:
+        """Crosshair mode: the next click on the screen selects the scanned element under the pointer."""
+        if not self.elements:
+            self.status.setText("Scan the app first, then pick.")
+            return False
+        self._picker = PickOverlay(self.elements, force=force or self.btn_pick.isEnabled())
+        self._picker.picked.connect(self.select_index)
+        self._picker.cancelled.connect(lambda: self.status.setText("Picking cancelled."))
+        self.status.setText("Click an element in the program. Esc cancels.")
+        return self._picker.begin()
+
+    def select_index(self, i: int) -> None:
+        if 0 <= i < len(self._items):
+            self.search.clear()
+            self.tree.setCurrentItem(self._items[i]); self.tree.scrollToItem(self._items[i])
+            self.status.setText(f"Picked: {self.elements[i].name or self.elements[i].control_type}")
+
     def current_element(self) -> ElementInfo | None:
         cur = self.tree.currentItem()
         idx = cur.data(0, Qt.ItemDataRole.UserRole) if cur else None
@@ -171,6 +222,7 @@ class InspectPage(PageBase):
     def _show_detail(self, e: ElementInfo | None) -> None:
         self.d_empty.setVisible(e is None); self.d_body.setVisible(e is not None)
         self.msg.setText("")
+        self._sync_overlay()
         if e is None:
             return
         self.d_name.setText(e.name or "(no name)")

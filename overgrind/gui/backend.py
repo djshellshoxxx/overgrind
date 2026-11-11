@@ -374,6 +374,11 @@ def apply_fix(project: Project, fx: dict) -> Project:
         return dc.replace(project, controls=tuple(out), features=feats)
     if kind == "set_run" and target and hasattr(project.run, target):
         return dc.replace(project, run=dc.replace(project.run, **{target: value}))
+    if kind == "acknowledge":
+        try:
+            return _fn("project", "acknowledge_unknown")(project, project.name)
+        except BackendMissing:
+            return project
     return project
 
 
